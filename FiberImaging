@@ -1,0 +1,834 @@
+import cv2
+import numpy as np
+
+
+# ============================================================
+# SETTINGS
+# ============================================================
+
+IMAGE_FILE = "fiber_test.jpg"
+
+# Standard fiber cladding diameter
+FIBER_DIAMETER_UM = 125.0
+
+MICRONS_PER_INCH = 25400.0
+
+
+# =============d===============================================
+# PROCESS IMAGE
+# ============================================================
+
+def process_fibers(frame):
+
+    output = frame.copy()
+
+    # --------------------------------------------------------
+    # 1. Convert to grayscale
+    # --------------------------------------------------------
+
+    gray = cv2.cvtColor(
+        frame,
+        cv2.COLOR_BGR2GRAY
+    )
+
+    # Slight blur removes tiny sensor noise
+    blurred = cv2.GaussianBlur(
+        gray,
+        (5, 5),
+        0
+    )
+
+    # --------------------------------------------------------
+    # 2. Threshold dark fibers
+    #
+    # This image has a bright green background and dark fibers.
+    # --------------------------------------------------------
+
+    _, binary = cv2.threshold(
+        blurred,
+        50,
+        255,
+        cv2.THRESH_BINARY_INV
+    )
+
+    # Remove dark border around image
+    border = 10
+
+    binary[:border, :] = 0
+    binary[-border:, :] = 0
+    binary[:, :border] = 0
+    binary[:, -border:] = 0
+
+    # --------------------------------------------------------
+    # 3. Clean image
+    #
+    # Horizontal morphology helps reject circular dirt/bubbles.
+    # --------------------------------------------------------
+
+    close_kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (15, 7)
+    )
+
+    binary = cv2.morphologyEx(
+        binary,
+        cv2.MORPH_CLOSE,
+        close_kernel,
+        iterations=2
+    )
+
+    horizontal_kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (25, 5)
+    )
+
+    binary = cv2.morphologyEx(
+        binary,
+        cv2.MORPH_OPEN,
+        horizontal_kernel,
+        iterations=1
+    )
+
+    # --------------------------------------------------------
+    # 4. Find contours
+    # --------------------------------------------------------
+
+    contours, _ = cv2.findContours(
+        binary,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    valid_contours = []
+
+    for contour in contours:
+
+        area = cv2.contourArea(contour)
+
+        x, y, w, h = cv2.boundingRect(contour)
+
+        if h == 0:
+            continue
+
+        aspect_ratio = w / h
+
+        # Fiber should be:
+        # - large
+        # - horizontally elongated
+        if (
+            area > 5000
+            and
+            aspect_ratio > 2.0
+        ):
+            valid_contours.append(contour)
+
+    if len(valid_contours) < 2:
+
+        print("ERROR: Could not detect two fibers.")
+
+        return output, binary, {
+            "status": "FIBERS NOT DETECTED"
+        }
+
+    # Keep the two largest horizontal objects
+    valid_contours = sorted(
+        valid_contours,
+        key=cv2.contourArea,
+        reverse=True
+    )[:2]
+
+    # Sort left-to-right
+    valid_contours = sorted(
+        valid_contours,
+        key=lambda c: cv2.boundingRect(c)[0]
+    )
+
+    left_fiber = valid_contours[0]
+    right_fiber = valid_contours[1]
+
+    # ========================================================
+    # ANALYZE ONE FIBER
+    # ========================================================
+
+    def analyze_fiber(contour, side):
+
+        mask = np.zeros(
+            gray.shape,
+            dtype=np.uint8
+        )
+
+        cv2.drawContours(
+            mask,
+            [contour],
+            -1,
+            255,
+            -1
+        )
+
+        x, y, w, h = cv2.boundingRect(contour)
+
+        center_x = []
+        center_y = []
+        thicknesses = []
+
+        # ----------------------------------------------------
+        # Find vertical center of the fiber at each column
+        # ----------------------------------------------------
+
+        for xx in range(x, x + w):
+
+            rows = np.where(
+                mask[:, xx] > 0
+            )[0]
+
+            if len(rows) >= 10:
+
+                top = rows.min()
+                bottom = rows.max()
+
+                center = (
+                    top + bottom
+                ) / 2.0
+
+                thickness = (
+                    bottom - top + 1
+                )
+
+                center_x.append(xx)
+                center_y.append(center)
+                thicknesses.append(thickness)
+
+        center_x = np.array(
+            center_x,
+            dtype=np.float32
+        )
+
+        center_y = np.array(
+            center_y,
+            dtype=np.float32
+        )
+
+        thicknesses = np.array(
+            thicknesses,
+            dtype=np.float32
+        )
+
+        # ----------------------------------------------------
+        # Fit centerline using body of fiber
+        # Avoid using the rough fiber tip
+        # ----------------------------------------------------
+
+        if side == "left":
+
+            start = x + int(w * 0.10)
+            end = x + int(w * 0.70)
+
+        else:
+
+            start = x + int(w * 0.30)
+            end = x + int(w * 0.90)
+
+        valid = (
+            (center_x >= start)
+            &
+            (center_x <= end)
+        )
+
+        fit_x = center_x[valid]
+        fit_y = center_y[valid]
+
+        diameter_samples = thicknesses[valid]
+
+        # Centerline:
+        #
+        # y = mx + b
+        slope, intercept = np.polyfit(
+            fit_x,
+            fit_y,
+            1
+        )
+
+        angle = np.degrees(
+            np.arctan(slope)
+        )
+
+        diameter_pixels = float(
+            np.median(diameter_samples)
+        )
+
+        # ----------------------------------------------------
+        # Find inner tip
+        # ----------------------------------------------------
+
+        if side == "left":
+
+            tip_x = x + w - 1
+
+        else:
+
+            tip_x = x
+
+        tip_y = (
+            slope * tip_x
+            + intercept
+        )
+
+        return {
+            "x": x,
+            "y": y,
+            "w": w,
+            "h": h,
+            "slope": float(slope),
+            "intercept": float(intercept),
+            "angle": float(angle),
+            "diameter_pixels": diameter_pixels,
+            "tip_x": int(tip_x),
+            "tip_y": float(tip_y)
+        }
+
+    left = analyze_fiber(
+        left_fiber,
+        "left"
+    )
+
+    right = analyze_fiber(
+        right_fiber,
+        "right"
+    )
+
+    # ========================================================
+    # 5. CAMERA SCALE ESTIMATE
+    # ========================================================
+
+    average_diameter_pixels = (
+        left["diameter_pixels"]
+        +
+        right["diameter_pixels"]
+    ) / 2.0
+
+    microns_per_pixel = (
+        FIBER_DIAMETER_UM
+        /
+        average_diameter_pixels
+    )
+
+    inches_per_pixel = (
+        microns_per_pixel
+        /
+        MICRONS_PER_INCH
+    )
+
+    # ========================================================
+    # 6. MEASURE ALIGNMENT
+    # ========================================================
+
+    gap_pixels = (
+        right["tip_x"]
+        -
+        left["tip_x"]
+    )
+
+    vertical_offset_pixels = (
+        right["tip_y"]
+        -
+        left["tip_y"]
+    )
+
+    angular_offset = (
+        right["angle"]
+        -
+        left["angle"]
+    )
+
+    # Actual straight-line distance between tips
+    tip_distance_pixels = np.sqrt(
+        gap_pixels ** 2
+        +
+        vertical_offset_pixels ** 2
+    )
+
+    # Convert
+    gap_um = (
+        gap_pixels
+        *
+        microns_per_pixel
+    )
+
+    vertical_offset_um = (
+        vertical_offset_pixels
+        *
+        microns_per_pixel
+    )
+
+    tip_distance_um = (
+        tip_distance_pixels
+        *
+        microns_per_pixel
+    )
+
+    gap_inches = (
+        gap_pixels
+        *
+        inches_per_pixel
+    )
+
+    vertical_offset_inches = (
+        vertical_offset_pixels
+        *
+        inches_per_pixel
+    )
+
+    tip_distance_inches = (
+        tip_distance_pixels
+        *
+        inches_per_pixel
+    )
+
+    # ========================================================
+    # 7. ALIGNMENT STATUS
+    # ========================================================
+
+    if (
+        abs(vertical_offset_um) <= 3
+        and
+        abs(angular_offset) <= 1
+    ):
+
+        status = "CENTERED"
+
+    else:
+
+        status = "ALIGNING"
+
+    # ========================================================
+    # 8. DRAW FIBER OUTLINES
+    # ========================================================
+
+    cv2.drawContours(
+        output,
+        [left_fiber],
+        -1,
+        (0, 255, 0),
+        2
+    )
+
+    cv2.drawContours(
+        output,
+        [right_fiber],
+        -1,
+        (0, 255, 0),
+        2
+    )
+
+    # ========================================================
+    # 9. DRAW CENTERLINES
+    # ========================================================
+
+    def draw_centerline(data):
+
+        x1 = data["x"]
+        x2 = data["x"] + data["w"] - 1
+
+        y1 = int(
+            data["slope"] * x1
+            +
+            data["intercept"]
+        )
+
+        y2 = int(
+            data["slope"] * x2
+            +
+            data["intercept"]
+        )
+
+        cv2.line(
+            output,
+            (x1, y1),
+            (x2, y2),
+            (255, 0, 0),
+            2
+        )
+
+    draw_centerline(left)
+    draw_centerline(right)
+
+    # ========================================================
+    # 10. DRAW TIP POINTS
+    # ========================================================
+
+    left_tip = (
+        left["tip_x"],
+        int(left["tip_y"])
+    )
+
+    right_tip = (
+        right["tip_x"],
+        int(right["tip_y"])
+    )
+
+    cv2.circle(
+        output,
+        left_tip,
+        6,
+        (0, 0, 255),
+        -1
+    )
+
+    cv2.circle(
+        output,
+        right_tip,
+        6,
+        (0, 0, 255),
+        -1
+    )
+
+    # ========================================================
+    # 11. DRAW TRUE TIP-TO-TIP DISTANCE
+    # ========================================================
+
+    cv2.line(
+        output,
+        left_tip,
+        right_tip,
+        (255, 255, 0),
+        3
+    )
+
+    mid_x = int(
+        (
+            left_tip[0]
+            +
+            right_tip[0]
+        ) / 2
+    )
+
+    mid_y = int(
+        (
+            left_tip[1]
+            +
+            right_tip[1]
+        ) / 2
+    )
+
+    distance_text = (
+        f"{tip_distance_inches:.6f} in"
+    )
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    font_scale = 0.6
+
+    thickness = 2
+
+    text_size, baseline = cv2.getTextSize(
+        distance_text,
+        font,
+        font_scale,
+        thickness
+    )
+
+    text_width, text_height = text_size
+
+    text_x = (
+        mid_x
+        -
+        text_width // 2
+    )
+
+    text_y = (
+        mid_y - 15
+    )
+
+    # Black background for readability
+    cv2.rectangle(
+        output,
+        (
+            text_x - 5,
+            text_y - text_height - 5
+        ),
+        (
+            text_x + text_width + 5,
+            text_y + baseline + 5
+        ),
+        (0, 0, 0),
+        -1
+    )
+
+    cv2.putText(
+        output,
+        distance_text,
+        (
+            text_x,
+            text_y
+        ),
+        font,
+        font_scale,
+        (0, 255, 255),
+        thickness,
+        cv2.LINE_AA
+    )
+
+    # ========================================================
+    # 12. INFORMATION PANEL
+    # ========================================================
+
+    panel_x = 20
+    panel_y = 30
+
+    cv2.rectangle(
+        output,
+        (10, 10),
+        (440, 190),
+        (0, 0, 0),
+        -1
+    )
+
+    lines = [
+
+        f"Horizontal Gap: {gap_inches:.6f} in",
+
+        f"Vertical Offset: {vertical_offset_inches:.6f} in",
+
+        f"Tip Distance: {tip_distance_inches:.6f} in",
+
+        f"Angle Error: {angular_offset:.3f} deg",
+
+        f"Status: {status}"
+    ]
+
+    colors = [
+        (0, 255, 255),
+        (0, 255, 255),
+        (0, 255, 255),
+        (0, 255, 255),
+        (
+            (0, 255, 0)
+            if status == "CENTERED"
+            else
+            (0, 165, 255)
+        )
+    ]
+
+    for index, text in enumerate(lines):
+
+        cv2.putText(
+            output,
+            text,
+            (
+                panel_x,
+                panel_y
+                +
+                index * 30
+            ),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            colors[index],
+            2,
+            cv2.LINE_AA
+        )
+
+    # ========================================================
+    # RESULTS
+    # ========================================================
+
+    results = {
+
+        "fiber_diameter_pixels":
+            average_diameter_pixels,
+
+        "microns_per_pixel":
+            microns_per_pixel,
+
+        "horizontal_gap_pixels":
+            gap_pixels,
+
+        "vertical_offset_pixels":
+            vertical_offset_pixels,
+
+        "tip_distance_pixels":
+            tip_distance_pixels,
+
+        "horizontal_gap_um":
+            gap_um,
+
+        "vertical_offset_um":
+            vertical_offset_um,
+
+        "tip_distance_um":
+            tip_distance_um,
+
+        "horizontal_gap_inches":
+            gap_inches,
+
+        "vertical_offset_inches":
+            vertical_offset_inches,
+
+        "tip_distance_inches":
+            tip_distance_inches,
+
+        "left_angle":
+            left["angle"],
+
+        "right_angle":
+            right["angle"],
+
+        "angular_offset":
+            angular_offset,
+
+        "status":
+            status
+    }
+
+    return output, binary, results
+
+
+# ============================================================
+# LOAD IMAGE
+# ============================================================
+
+image = cv2.imread(
+    IMAGE_FILE
+)
+
+if image is None:
+
+    print(
+        f"Could not find {IMAGE_FILE}"
+    )
+
+    exit()
+
+
+# ============================================================
+# RUN
+# ============================================================
+
+processed, binary, results = process_fibers(
+    image
+)
+
+
+# ============================================================
+# PRINT RESULTS
+# ============================================================
+
+print()
+print("==========================================")
+print("        FIBER ALIGNMENT RESULTS")
+print("==========================================")
+
+print(
+    f"Fiber diameter: "
+    f"{results['fiber_diameter_pixels']:.2f} px"
+)
+
+print(
+    f"Scale: "
+    f"{results['microns_per_pixel']:.4f} um/pixel"
+)
+
+print()
+
+print(
+    f"Horizontal gap: "
+    f"{results['horizontal_gap_pixels']:.2f} px"
+)
+
+print(
+    f"Horizontal gap: "
+    f"{results['horizontal_gap_um']:.2f} um"
+)
+
+print(
+    f"Horizontal gap: "
+    f"{results['horizontal_gap_inches']:.6f} in"
+)
+
+print()
+
+print(
+    f"Vertical offset: "
+    f"{results['vertical_offset_pixels']:.2f} px"
+)
+
+print(
+    f"Vertical offset: "
+    f"{results['vertical_offset_um']:.2f} um"
+)
+
+print(
+    f"Vertical offset: "
+    f"{results['vertical_offset_inches']:.6f} in"
+)
+
+print()
+
+print(
+    f"True tip-to-tip distance: "
+    f"{results['tip_distance_pixels']:.2f} px"
+)
+
+print(
+    f"True tip-to-tip distance: "
+    f"{results['tip_distance_um']:.2f} um"
+)
+
+print(
+    f"True tip-to-tip distance: "
+    f"{results['tip_distance_inches']:.6f} in"
+)
+
+print()
+
+print(
+    f"Left Angle: "
+    f"{results['left_angle']:.3f} deg"
+)
+
+print(
+    f"Right Angle: "
+    f"{results['right_angle']:.3f} deg"
+)
+
+print(
+    f"Angular Error: "
+    f"{results['angular_offset']:.3f} deg"
+)
+
+print()
+
+print(
+    f"Status: "
+    f"{results['status']}"
+)
+
+print("==========================================")
+print()
+
+
+# ============================================================
+# DISPLAY
+# ============================================================
+
+cv2.imshow(
+    "1 - Original Image",
+    image
+)
+
+cv2.imshow(
+    "2 - Binary Detection",
+    binary
+)
+
+cv2.imshow(
+    "3 - Fiber Alignment Result",
+    processed
+)
+
+print(
+    "Press any key inside an image window to exit."
+)
+
+cv2.waitKey(0)
+
+cv2.destroyAllWindows()
