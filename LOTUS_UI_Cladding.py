@@ -885,7 +885,7 @@ class LotusUI(tk.Tk):
                 status = 'LOADED SAMPLE • not live'
             elif frame is not None:
                 from PIL import Image, ImageTk
-                preview = frame.copy()
+                preview = orient_camera_frame(frame, name)
                 preview.thumbnail((width, max(1, height - 25)), Image.Resampling.BILINEAR)
                 screen.preview = ImageTk.PhotoImage(preview, master=self)
                 status = f'LIVE • camera {self.camera_order[name]}'
@@ -953,7 +953,7 @@ class LotusUI(tk.Tk):
             if image is not None:
                 image.write(str(path), format='png')
             else:
-                frame.save(path, format='PNG')
+                orient_camera_frame(frame, name).save(path, format='PNG')
             if notify:
                 messagebox.showinfo('Saved', f'Capture saved:\n{path}', parent=self)
             return path
@@ -1760,6 +1760,15 @@ def auto_xyz_plan(matrix,observation,scales,target_um,gap_tolerance_um,offset_to
 
 
 
+def orient_camera_frame(image,name):
+    """Use holder-consistent left/right orientation for live camera images."""
+    if image is None:return None
+    if name=='Y VIEW':
+        from PIL import Image
+        return image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    return image.copy()
+
+
 def stable_calibration_window(frames):
     """Fit short noisy windows; report drift instead of requiring frozen pixels."""
     import numpy as np
@@ -2385,7 +2394,7 @@ class EngineeringLotusUI(LotusUI):
         image,stamp,status=self.feeds.analysis_snapshot(index)
         if image is None:
             return None,'unavailable',None
-        return image.copy(),'live',stamp
+        return orient_camera_frame(image,name),'live',stamp
 
     def source_key(self,name):
         if name in self.analysis_samples:
@@ -2411,7 +2420,7 @@ class EngineeringLotusUI(LotusUI):
             if source=='live':
                 # Read at execution time, not submission time; never analyze a backlog.
                 newest,newstamp,_=self.feeds.analysis_snapshot(index)
-                if newest is not None:image,stamp=newest,newstamp
+                if newest is not None:image,stamp=orient_camera_frame(newest,name),newstamp
             try:
                 if source=='live' and (stamp is None or started-stamp>2):
                     result={'valid':False,'reason':'Camera capture stalled: no fresh frame.'}
@@ -2859,7 +2868,7 @@ class EngineeringLotusUI(LotusUI):
 
     def auto_xy_signature(self,observation):
         # Calibration is specific to view assignment, scale in pixels, ROI and detector tuning.
-        return json.loads(json.dumps({'xyz_schema':8,'detector_revision':'cladding-tip-envelope-v4','camera_calibrations':self.calibrations,'holder_layout':HOLDER_LAYOUT,'cameras':self.camera_order,'sizes':observation['sizes'],
+        return json.loads(json.dumps({'xyz_schema':8,'camera_orientation':{'X VIEW':'native','Y VIEW':'mirror-horizontal'},'detector_revision':'cladding-tip-envelope-v4','camera_calibrations':self.calibrations,'holder_layout':HOLDER_LAYOUT,'cameras':self.camera_order,'sizes':observation['sizes'],
             'roi':self.rois,'vision':self.vision_options,'firmware':self.hw.snapshot().get('firmware')},sort_keys=True))
 
     def auto_xy_set_text(self,text):
@@ -3216,7 +3225,7 @@ class EngineeringLotusUI(LotusUI):
               'exported_at':datetime.now().isoformat(),'settings':self.preferences,'vision_settings':self.vision_options,
               'alignment_status':fiber_alignment_status(self.measurements,self.alignment_criteria),
               'holder_layout':HOLDER_LAYOUT,'current_camera_calibrations':self.calibrations,'motor_calibrations':self.motor_calibrations,
-              'camera_assignments':self.camera_order,'roi':self.rois,'latest_measurements':self.measurements,
+              'camera_assignments':self.camera_order,'camera_orientation':{'X VIEW':'native','Y VIEW':'mirror-horizontal'},'roi':self.rois,'latest_measurements':self.measurements,
               'controller':self.hw.snapshot(),'auto_xy_calibration':self.auto_xy_model,'auto_xy_status':self.auto_xy_message,'calibration_attempts':getattr(self,'calibration_attempts',[]),
               'limitations':['Image geometry estimates; no validated accuracy or optical loss measurement.',
                 'Single isotropic camera scale assumes square pixels and negligible distortion.',
