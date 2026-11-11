@@ -1088,7 +1088,7 @@ class LotusUI(tk.Tk):
         # Pulse counts, NOT distances: stage displacement depends on gearing.
         profile = self.preferences.get('Default step', 'Fine')
         if profile == 'Coarse':
-            return (100 if axis == 'Y' else 500), 1000
+            return coarse_motor_profile(axis)
         if profile == 'Medium':
             return 50, 500
         return 1, 200
@@ -1731,11 +1731,16 @@ def auto_xy_plan(matrix, offsets, limit=5, gain=.4):
     return ('X','Y')[axis],pulses
 
 
+def coarse_motor_profile(axis):
+    if axis not in ('X','Y','Z'):raise ValueError('Unknown motor axis.')
+    return (100 if axis=='Y' else 500),1000
+
+
 def auto_xyz_plan(matrix,observation,scales,target_um,gap_tolerance_um,offset_tolerance_px,z_burst_pulses=1,axis_bursts=None):
     """One verified calibrated burst per correction; no assumed sub-burst resolution."""
     import numpy as np
-    if isinstance(z_burst_pulses,bool) or int(z_burst_pulses)!=z_burst_pulses or not 1<=z_burst_pulses<=100:raise ValueError('Invalid calibrated Z burst size.')
-    if axis_bursts is not None and (set(axis_bursts)!=set(('X','Y','Z')) or any(isinstance(v,bool) or int(v)!=v or not 1<=v<=100 for v in axis_bursts.values())):raise ValueError('Invalid calibrated axis burst sizes.')
+    if isinstance(z_burst_pulses,bool) or int(z_burst_pulses)!=z_burst_pulses or not 1<=z_burst_pulses<=500:raise ValueError('Invalid calibrated Z burst size.')
+    if axis_bursts is not None and (set(axis_bursts)!=set(('X','Y','Z')) or any(isinstance(v,bool) or int(v)!=v or not 1<=v<=coarse_motor_profile(a)[0] for a,v in axis_bursts.items())):raise ValueError('Invalid calibrated axis burst sizes.')
     j=np.asarray(matrix,dtype=float);g=np.asarray(observation['gaps'],dtype=float)
     scale=np.asarray(scales,dtype=float)
     if j.shape!=(4,3) or not np.isfinite(j).all():raise ValueError('Invalid XYZ response matrix.')
@@ -1900,7 +1905,7 @@ def validate_calibration_response(axis,change,uncertainty,raw):
 
 def calibrated_axis_burst(axis,samples,count):
     import numpy as np
-    if isinstance(count,bool) or int(count)!=count or not 1<=count<=100:raise ValueError('Choose 1–100 pulses.')
+    if isinstance(count,bool) or int(count)!=count or not 1<=count<=coarse_motor_profile(axis)[0]:raise ValueError('Burst exceeds the Coarse limit for this axis.')
     if not all(k in samples for k in ('+','-')):raise ValueError('Measure BOTH directions at the same pulse count.')
     a=np.asarray(samples['+'],float);b=np.asarray(samples['-'],float)
     if a.shape!=(4,) or b.shape!=(4,) or not np.isfinite([a,b]).all():raise ValueError('Invalid motor response.')
@@ -2917,7 +2922,7 @@ class EngineeringLotusUI(LotusUI):
 
     def auto_xy_signature(self,observation):
         # Calibration is specific to view assignment, scale in pixels, ROI and detector tuning.
-        return json.loads(json.dumps({'xyz_schema':9,'camera_orientation':{'X VIEW':'native','Y VIEW':'mirror-horizontal'},'detector_revision':'cladding-tip-envelope-v4','camera_calibrations':self.calibrations,'holder_layout':HOLDER_LAYOUT,'cameras':self.camera_order,'sizes':observation['sizes'],
+        return json.loads(json.dumps({'xyz_schema':10,'camera_orientation':{'X VIEW':'native','Y VIEW':'mirror-horizontal'},'detector_revision':'cladding-tip-envelope-v4','camera_calibrations':self.calibrations,'holder_layout':HOLDER_LAYOUT,'cameras':self.camera_order,'sizes':observation['sizes'],
             'roi':self.rois,'vision':self.vision_options,'firmware':self.hw.snapshot().get('firmware')},sort_keys=True))
 
     def auto_xy_set_text(self,text):
@@ -2942,7 +2947,7 @@ class EngineeringLotusUI(LotusUI):
         self.auto_xy_stop('Stopped for calibration');self.end_jog()
         top=tk.Toplevel(self);top.title('Automatic motor response calibration')
         self.auto_xy_calibration_window=top
-        tk.Label(top,text='Each button captures BEFORE frames, moves once, confirms the controller,\nthen captures AFTER frames. Each window uses 15 fresh frame pairs and filters isolated detection glitches.\nBoth windows are fitted together to separate drift from movement.\nDo not jog other controls during a measurement.\nChoose a burst for each axis (1–100 pulses). Measure BOTH directions with the same count.\nZ runs at 500 pulses/s; X/Y at 100. Measure Z OPENING first, then reverse.\nBoth Z directions must be measurable and consistent. Keep both cameras LIVE and UV OFF.',justify='left').pack(padx=12,pady=10)
+        tk.Label(top,text='Each button captures BEFORE frames, moves once, confirms the controller,\nthen captures AFTER frames. Each window uses 15 fresh frame pairs and filters isolated detection glitches.\nBoth windows are fitted together to separate drift from movement.\nDo not jog other controls during a measurement.\nCoarse defaults: X 500, Y 100, Z 500 pulses. Measure BOTH directions with the same count.\nAll axes run at 1000 pulses/s, matching manual Coarse. Measure Z OPENING first, then reverse.\nBoth Z directions must be measurable and consistent. Keep both cameras LIVE and UV OFF.',justify='left').pack(padx=12,pady=10)
         status=tk.Label(top,text='Choose an axis measurement.',justify='left',wraplength=720);status.pack(padx=12,pady=10)
         job={};controls=[];counts={};result_labels={}
         results=tk.Frame(top);results.pack(fill='x',padx=12,pady=4)
@@ -2953,9 +2958,10 @@ class EngineeringLotusUI(LotusUI):
                 label=tk.Label(cell,text=('−' if direction<0 else '+')+': Not measured this session',justify='left',wraplength=240)
                 label.pack(anchor='w');result_labels[(axis,direction)]=label
         count_row=tk.Frame(top);count_row.pack(padx=10,pady=6)
-        for axis,default in (('X',20),('Y',20),('Z',100)):
+        for axis in ('X','Y','Z'):
+            default=coarse_motor_profile(axis)[0]
             tk.Label(count_row,text=axis+' burst pulses:').pack(side='left')
-            entry=tk.Spinbox(count_row,from_=1,to=100,width=5);entry.delete(0,'end');entry.insert(0,str(default));entry.pack(side='left',padx=5);counts[axis]=entry;controls.append(entry)
+            entry=tk.Spinbox(count_row,from_=1,to=default,width=5);entry.delete(0,'end');entry.insert(0,str(default));entry.pack(side='left',padx=5);counts[axis]=entry;controls.append(entry)
         def finish(message):
             job.clear()
             for button in controls:button.config(state='normal')
@@ -2972,7 +2978,7 @@ class EngineeringLotusUI(LotusUI):
                 self.end_jog();obs=self.auto_xy_observation()
                 signature=self.auto_xy_signature(obs)
                 burst=int(counts[axis].get())
-                if not 1<=burst<=100:raise ValueError('Choose 1–100 pulses.')
+                if not 1<=burst<=coarse_motor_profile(axis)[0]:raise ValueError('Burst exceeds the Coarse limit for this axis.')
                 job.update(axis=axis,direction=direction,pulses=direction*burst,
                            phase='before',phase_at=time.monotonic(),positions=obs['positions'],
                            signature=signature,frames=[],last_stamps=[0,0])
@@ -3016,7 +3022,7 @@ class EngineeringLotusUI(LotusUI):
                                     sample=np.asarray(next(iter(samples.values())))
                                     if np.any(np.asarray(measured['gaps'])+2*sample[2:]*pulses<16):raise ValueError('Insufficient clearance for Z burst.')
                                 expected=list(positions);expected[('X','Y','Z').index(axis)]+=pulses
-                                sent=time.monotonic();speed=500 if axis=='Z' else 100
+                                sent=time.monotonic();speed=coarse_motor_profile(axis)[1]
                                 if not self.send_hw(f'MOVE {axis} {pulses} {speed}',popup_on_fail=False):raise ValueError('Move could not be sent.')
                                 job.update(phase='motion',phase_at=sent,sent_at=sent,expected=expected)
                                 status.config(text=f'{axis} {pulses:+d} pulses sent; waiting for controller confirmation.')
@@ -3024,7 +3030,7 @@ class EngineeringLotusUI(LotusUI):
                                 start_obs=job['before'];axis=job['axis'];pulses=job['pulses']
                                 corrected,uncertainty,raw_change=drift_corrected_calibration(start_obs,measured)
                                 response=corrected/pulses
-                                attempt={'axis':axis,'pulses':pulses,'recorded_at':datetime.now().isoformat(),'before':start_obs,'after':measured,'sent_at':job['sent_at'],'response_px_per_pulse':response.tolist(),'automatic_capture':True,'raw_change_px':raw_change.tolist(),'drift_corrected_change_px':corrected.tolist(),'response_uncertainty_px':uncertainty.tolist()}
+                                attempt={'axis':axis,'pulses':pulses,'recorded_at':datetime.now().isoformat(),'before':start_obs,'after':measured,'sent_at':job['sent_at'],'response_px_per_pulse':response.tolist(),'speed_pps':coarse_motor_profile(axis)[1],'automatic_capture':True,'raw_change_px':raw_change.tolist(),'drift_corrected_change_px':corrected.tolist(),'response_uncertainty_px':uncertainty.tolist()}
                                 if not hasattr(self,'calibration_attempts'):self.calibration_attempts=[]
                                 self.calibration_attempts.append(attempt);self.calibration_attempts=self.calibration_attempts[-100:]
                                 try:validate_calibration_response(axis,corrected,uncertainty,raw_change)
@@ -3186,7 +3192,7 @@ class EngineeringLotusUI(LotusUI):
             expected=list(obs['positions']);expected[('X','Y','Z').index(axis)]+=pulses
             run['before_move_gaps']=obs['gaps'];run['before_move_geometry']=np.asarray(obs['offsets']+obs['gaps']);run['last_axis']=axis;run['last_pulses']=pulses
             sent_at=time.monotonic()
-            speed=500 if axis=='Z' else 100
+            speed=coarse_motor_profile(axis)[1]
             if not self.send_hw(f'MOVE {axis} {pulses} {speed}',popup_on_fail=False):raise ValueError('Motor command could not be sent.')
             self.auto_xy_pending={'sent_at':sent_at,'deadline':sent_at+4,'expected':expected}
             run['moves']+=1;run['pulses']+=abs(pulses);run['previous_norm']=norm
