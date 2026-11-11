@@ -1807,27 +1807,40 @@ def stable_calibration_window(frames):
     """Fit short noisy windows; report drift instead of requiring frozen pixels."""
     import numpy as np
     if len(frames)<7:return None
-    frames=frames[-7:]
+    frames=frames[-15:]
     if any(f['positions']!=frames[0]['positions'] for f in frames):return None
     values=np.asarray([f['offsets']+f['gaps'] for f in frames],dtype=float)
     stamps=np.asarray([f['stamps'] for f in frames],dtype=float)
     if not np.isfinite(values).all() or not np.isfinite(stamps).all():return None
     if np.any(np.diff(stamps,axis=0)<=0) or np.any(stamps[-1]-stamps[0]<2):return None
-    estimates=[];slopes=[];variances=[];slope_variances=[];residuals=[]
+    estimates=[];slopes=[];variances=[];slope_variances=[];residuals=[];inliers=[]
     for i in range(4):
         times=stamps[:,i%2]-stamps[-1,i%2]
-        design=np.column_stack((times,np.ones(len(times))))
-        slope,intercept=np.linalg.lstsq(design,values[:,i],rcond=None)[0]
-        errors=values[:,i]-(slope*times+intercept)
+        y=values[:,i]
+        # A median pairwise slope tolerates isolated edge-detection glitches.
+        # Never discard a sustained jump or a cluster of invalid detections.
+        pairs=[(y[b]-y[a])/(times[b]-times[a]) for a in range(len(times)) for b in range(a+1,len(times))]
+        initial_slope=float(np.median(pairs))
+        initial_intercept=float(np.median(y-initial_slope*times))
+        errors=y-(initial_slope*times+initial_intercept)
+        spread=max(.2,1.4826*float(np.median(np.abs(errors-np.median(errors)))))
+        keep=np.abs(errors)<=max(1.,4*spread)
+        dropped=np.flatnonzero(~keep)
+        if len(dropped)>min(2,len(times)//7) or (len(dropped)>1 and np.any(np.diff(dropped)==1)):return None
+        if keep.sum()<7 or np.ptp(times[keep])<2:return None
+        design=np.column_stack((times[keep],np.ones(int(keep.sum()))))
+        slope,intercept=np.linalg.lstsq(design,y[keep],rcond=None)[0]
+        errors=y[keep]-(slope*times[keep]+intercept)
         rms=float(np.sqrt(np.mean(errors**2)))
-        # Slow drift is measurable; abrupt/very noisy changes remain unresolved.
         if rms>1.5 or abs(slope)>1.:return None
-        cov=np.linalg.inv(design.T@design)*max(.04,float(np.sum(errors**2)/(len(times)-2)))
+        cov=np.linalg.inv(design.T@design)*max(.04,float(np.sum(errors**2)/(keep.sum()-2)))
+        inliers.append(keep.tolist())
         estimates.append(float(intercept));slopes.append(float(slope))
         variances.append(float(cov[1,1]));slope_variances.append(float(cov[0,0]));residuals.append(rms)
     result=dict(frames[-1]);result.update(offsets=estimates[:2],gaps=estimates[2:],sampling_window={
-        'frames':7,'start_stamps':frames[0]['stamps'],'end_stamps':frames[-1]['stamps'],
+        'frames':len(frames),'start_stamps':frames[0]['stamps'],'end_stamps':frames[-1]['stamps'],
         'sample_stamps':stamps.tolist(),'sample_values':values.tolist(),
+        'sample_inliers':np.asarray(inliers).T.tolist(),'discarded_samples':[len(frames)-sum(k) for k in inliers],
         'drift_px_per_s':slopes,'estimate_variance_px2':variances,
         'drift_variance':slope_variances,'residual_rms_px':residuals})
     return result
@@ -1854,6 +1867,8 @@ def drift_corrected_calibration(before,after):
         t=np.concatenate((pre_stamps[:,i%2],post_stamps[:,i%2]))
         y=np.concatenate((pre_values[:,i],post_values[:,i]))
         step=np.concatenate((np.zeros(len(pre_values)),np.ones(len(post_values))))
+        keep=np.concatenate((np.asarray(pre.get('sample_inliers',np.ones_like(pre_values)),bool)[:,i],np.asarray(post.get('sample_inliers',np.ones_like(post_values)),bool)[:,i]))
+        t=t[keep];y=y[keep];step=step[keep]
         design=np.column_stack((np.ones(len(t)),t-t.mean(),step))
         fit=np.linalg.lstsq(design,y,rcond=None)[0]
         residual=y-design@fit
@@ -2902,7 +2917,7 @@ class EngineeringLotusUI(LotusUI):
 
     def auto_xy_signature(self,observation):
         # Calibration is specific to view assignment, scale in pixels, ROI and detector tuning.
-        return json.loads(json.dumps({'xyz_schema':8,'camera_orientation':{'X VIEW':'native','Y VIEW':'mirror-horizontal'},'detector_revision':'cladding-tip-envelope-v4','camera_calibrations':self.calibrations,'holder_layout':HOLDER_LAYOUT,'cameras':self.camera_order,'sizes':observation['sizes'],
+        return json.loads(json.dumps({'xyz_schema':9,'camera_orientation':{'X VIEW':'native','Y VIEW':'mirror-horizontal'},'detector_revision':'cladding-tip-envelope-v4','camera_calibrations':self.calibrations,'holder_layout':HOLDER_LAYOUT,'cameras':self.camera_order,'sizes':observation['sizes'],
             'roi':self.rois,'vision':self.vision_options,'firmware':self.hw.snapshot().get('firmware')},sort_keys=True))
 
     def auto_xy_set_text(self,text):
@@ -2927,9 +2942,16 @@ class EngineeringLotusUI(LotusUI):
         self.auto_xy_stop('Stopped for calibration');self.end_jog()
         top=tk.Toplevel(self);top.title('Automatic motor response calibration')
         self.auto_xy_calibration_window=top
-        tk.Label(top,text='Each button captures BEFORE frames, moves once, confirms the controller,\nthen captures AFTER frames. Both windows are fitted together to separate drift from movement.\nDo not jog other controls during a measurement.\nChoose a burst for each axis (1–100 pulses). Measure BOTH directions with the same count.\nZ runs at 500 pulses/s; X/Y at 100. Measure Z OPENING first, then reverse.\nBoth Z directions must be measurable and consistent. Keep both cameras LIVE and UV OFF.',justify='left').pack(padx=12,pady=10)
+        tk.Label(top,text='Each button captures BEFORE frames, moves once, confirms the controller,\nthen captures AFTER frames. Each window uses 15 fresh frame pairs and filters isolated detection glitches.\nBoth windows are fitted together to separate drift from movement.\nDo not jog other controls during a measurement.\nChoose a burst for each axis (1–100 pulses). Measure BOTH directions with the same count.\nZ runs at 500 pulses/s; X/Y at 100. Measure Z OPENING first, then reverse.\nBoth Z directions must be measurable and consistent. Keep both cameras LIVE and UV OFF.',justify='left').pack(padx=12,pady=10)
         status=tk.Label(top,text='Choose an axis measurement.',justify='left',wraplength=720);status.pack(padx=12,pady=10)
-        job={};controls=[];counts={}
+        job={};controls=[];counts={};result_labels={}
+        results=tk.Frame(top);results.pack(fill='x',padx=12,pady=4)
+        for axis in ('X','Y','Z'):
+            cell=tk.Frame(results);cell.pack(side='left',expand=True,fill='x',padx=6)
+            tk.Label(cell,text=HOLDER_LAYOUT[axis].title()+' '+axis,font=(FONT,10,'bold')).pack(anchor='w')
+            for direction in (-1,1):
+                label=tk.Label(cell,text=('−' if direction<0 else '+')+': Not measured this session',justify='left',wraplength=240)
+                label.pack(anchor='w');result_labels[(axis,direction)]=label
         count_row=tk.Frame(top);count_row.pack(padx=10,pady=6)
         for axis,default in (('X',20),('Y',20),('Z',100)):
             tk.Label(count_row,text=axis+' burst pulses:').pack(side='left')
@@ -2955,7 +2977,8 @@ class EngineeringLotusUI(LotusUI):
                            phase='before',phase_at=time.monotonic(),positions=obs['positions'],
                            signature=signature,frames=[],last_stamps=[0,0])
                 for button in controls:button.config(state='disabled')
-                status.config(text='Sampling BEFORE frames and estimating drift. No movement yet.')
+                result_labels[(axis,direction)].config(text=('−' if direction<0 else '+')+': Measuring…')
+                status.config(text='Sampling BEFORE: 0/15 fresh frame pairs. No movement yet.')
                 self.after(100,tick)
             except Exception as exc:finish('Not started: '+str(exc))
         def tick():
@@ -2978,8 +3001,11 @@ class EngineeringLotusUI(LotusUI):
                     if now-job['phase_at']>20:raise ValueError('Could not fit a usable noise/drift window within 20 seconds. Readings are too noisy, abrupt or fast for calibration.')
                     gate=job.get('after_frame',job['phase_at'])
                     if min(obs['stamps'])>gate and all(b-a>=.35 for a,b in zip(job['last_stamps'],obs['stamps'])):
-                        job['last_stamps']=obs['stamps'];job['frames'].append(obs);job['frames']=job['frames'][-7:]
-                        measured=stable_calibration_window(job['frames'])
+                        job['last_stamps']=obs['stamps'];job['frames'].append(obs);job['frames']=job['frames'][-15:]
+                        count=len(job['frames']);phase=job['phase'].upper()
+                        status.config(text=f'{job["axis"]} {job["pulses"]:+d} pulses • {phase}: {count}/15 fresh frame pairs'+(' — no movement yet.' if phase=='BEFORE' else ' — movement confirmed.'))
+                        measured=stable_calibration_window(job['frames']) if count>=15 else None
+                        if count>=15 and measured is None:status.config(text=f'{phase}: resampling; drift/noise or repeated detection glitches exceed limits. No extra move will be sent.')
                         if measured is not None:
                             if job['phase']=='before':
                                 job['before']=measured
@@ -3025,11 +3051,18 @@ class EngineeringLotusUI(LotusUI):
                                 path=self.data_dir/('auto_xy_'+self.vision_options['X VIEW']['method']+'.json');temporary=path.with_suffix('.tmp')
                                 temporary.write_text(json.dumps(model,indent=2,allow_nan=False));temporary.replace(path)
                                 self.auto_xy_model=model
-                                finish((axis+' direction saved; measure the opposite direction at the SAME pulse count.' if axis not in model['columns'] else 'Recorded '+axis)+'. Columns: '+', '.join(model['columns']))
+                                attempt['accepted']=True
+                                key=(axis,1 if pulses>0 else -1)
+                                if axis=='Z':detail=f'Gap X {corrected[2]:+.2f}, Y {corrected[3]:+.2f} px'
+                                else:detail=f'Lateral X {corrected[0]:+.2f}, Y {corrected[1]:+.2f} px'
+                                result_labels[key].config(text=('−' if pulses<0 else '+')+': '+detail+'; saved')
+                                finish((axis+' direction saved; measure the opposite direction at the SAME pulse count.' if axis not in model['columns'] else 'Recorded '+axis)+'. Columns: '+', '.join(model['columns'])+'\n'+detail+'; estimated noise (1σ): '+', '.join(f'{v:.2f}' for v in uncertainty)+' px.')
                                 return
                 self.after(100,tick)
             except Exception as exc:
                 phase=job.get('phase');self.hw.send('STOP')
+                key=(job.get('axis'),job.get('direction'))
+                if key in result_labels:result_labels[key].config(text=('−' if key[1]<0 else '+')+': Not accepted — see details above')
                 if not hasattr(self,'calibration_attempts'):self.calibration_attempts=[]
                 self.calibration_attempts.append({'phase':phase,'axis':job.get('axis'),'sent_at':job.get('sent_at'),'before':job.get('before'),'sampling_frames':job.get('frames',[]),'rejected':str(exc),'automatic_capture':True})
                 self.calibration_attempts=self.calibration_attempts[-100:]
