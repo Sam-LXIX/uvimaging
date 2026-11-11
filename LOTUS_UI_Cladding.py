@@ -531,6 +531,8 @@ class LotusUI(tk.Tk):
         self.home_status_subtitle = None
         self.home_temp_value = None
         self.cure_end = None
+        self.cure_started = None
+        self.cure_message = 'Ready'
         self.cure_label = None
         self.closing = False
         self.retry_pending = False
@@ -620,8 +622,8 @@ class LotusUI(tk.Tk):
         motor_text = ('FAULT' if fault else
                       'Moving' if connected and state.get('moving') else
                       'Idle' if connected else 'Offline')
-        uv_text = (f"On {state.get('uv', 0)}%" if connected and
-                   state.get('uvactive') else 'Off')
+        uv_text = self.cure_timer_text(state)
+        if uv_text == 'Ready':uv_text = 'Off'
         fan_text = (f"{state.get('fanrpm', 0)} RPM" if connected else '—')
         humidity_text = (self.fmt_num(state.get('humidity'), '%')
                          if connected else '—')
@@ -1202,6 +1204,7 @@ class LotusUI(tk.Tk):
         self.cure_end = None
         if self.cure_label is not None and self.cure_label.winfo_exists():
             self.cure_label.config(text='STOPPED')
+        self.cure_message = 'Stop requested'
         self.log_hardware_event('EMERGENCY STOP')
 
     def auto_align_unavailable(self):
@@ -1460,11 +1463,11 @@ class LotusUI(tk.Tk):
         )
 
     def show_cure(self):
-        main = self.page_shell('alignment', 'UV Cure',
+        main = self.page_shell('cure', 'UV Cure',
                                'Hardware-controlled cure timer with automatic UV shutoff')
         outer, panel = self.bordered(main)
         outer.pack(fill='both', expand=True)
-        self.cure_label = tk.Label(panel, text='Ready', font=(FONT, 28, 'bold'),
+        self.cure_label = tk.Label(panel, text=self.cure_timer_text(self.hw.snapshot()), font=(FONT, 28, 'bold'),
                                    fg=PURPLE, bg=WHITE)
         self.cure_label.pack(pady=25)
         tk.Label(panel,
@@ -1479,7 +1482,13 @@ class LotusUI(tk.Tk):
         self.button(panel, 'Stop UV', self.stop_cure).pack(pady=5)
         self.button(panel, 'Continue to Verification →', self.show_verification).pack(pady=10)
 
+    def cure_timer_text(self,state):
+        return uv_countdown_text(self.cure_end,state,time.monotonic(),getattr(self,'cure_message','Ready'))
+
     def start_cure(self):
+        if self.cure_end is not None or self.hw.snapshot().get('uvactive'):
+            messagebox.showinfo('UV Cure','A cure is already active. Stop it before starting another.',parent=self)
+            return
         if not self.hw.snapshot().get('connected'):
             self.hardware_unavailable()
             return
@@ -1512,15 +1521,20 @@ class LotusUI(tk.Tk):
             messagebox.showerror('UV cure failed', response, parent=self)
             return
 
-        self.cure_end = time.monotonic() + seconds
-        self.cure_label.config(text=f'{seconds} seconds')
+        self.cure_started = time.monotonic()
+        self.cure_end = self.cure_started + seconds
+        self.cure_message = 'Curing'
+        if self.cure_label is not None and self.cure_label.winfo_exists():
+            self.cure_label.config(text=self.cure_timer_text(self.hw.snapshot()))
+        self.refresh_status()
         self.log_hardware_event(f'UV cure started: {seconds}s @ {intensity}%')
 
     def stop_cure(self):
         self.cure_end = None
+        self.cure_message = 'Stop requested'
         self.hw.send('UV_STOP')
         if self.cure_label is not None and self.cure_label.winfo_exists():
-            self.cure_label.config(text='Stopped')
+            self.cure_label.config(text='Stop requested')
         self.log_hardware_event('UV stopped')
 
     def show_verification(self):
@@ -1631,6 +1645,7 @@ class LotusUI(tk.Tk):
             self.log_hardware_event('RX ' + event)
             if event.startswith('EVENT UV_DONE'):
                 self.cure_end = None
+                self.cure_message = 'Complete'
                 if self.cure_label is not None and self.cure_label.winfo_exists():
                     self.cure_label.config(text='Complete')
 
@@ -1638,12 +1653,17 @@ class LotusUI(tk.Tk):
         self.update_home_banner()
         self.update_diagnostics_labels()
 
-        if self.cure_end is not None:
-            left = max(0.0, self.cure_end - time.monotonic())
-            if self.cure_label is not None and self.cure_label.winfo_exists():
-                self.cure_label.config(text=f'{math.ceil(left)} seconds' if left else 'Complete')
-            if left == 0:
-                self.cure_end = None
+        now=time.monotonic()
+        fresh=bool(state.get('connected')) and 0<=now-state.get('_status_monotonic',0)<3
+        if (self.cure_end is not None and fresh and
+                state.get('_status_monotonic',0)>getattr(self,'cure_started',now) and not state.get('uvactive')):
+            self.cure_message='Complete' if now>=self.cure_end else 'UV stopped early'
+            self.cure_end=None
+        if self.cure_message=='Stop requested' and fresh and not state.get('uvactive'):
+            self.cure_message='Stopped'
+        if self.cure_label is not None and self.cure_label.winfo_exists():
+            self.cure_label.config(text=self.cure_timer_text(state))
+        self.refresh_status()
 
         self.after(1000, self.tick)
 
@@ -1758,6 +1778,20 @@ def auto_xyz_plan(matrix,observation,scales,target_um,gap_tolerance_um,offset_to
     return ('X','Y','Z')[axis],pulses,baseline**.5
 
 
+
+
+def uv_countdown_text(deadline,state,now,message='Ready'):
+    """Display an estimated countdown without treating local expiry as UV shutoff."""
+    import math
+    fresh=bool(state.get('connected')) and 0<=now-state.get('_status_monotonic',0)<3
+    if deadline is not None:
+        remaining=max(0,math.ceil(deadline-now))
+        if not fresh:return 'UV state unknown — connection lost'
+        if remaining==0:return '00:00 — confirming UV off'
+        return f'{remaining//60:02d}:{remaining%60:02d} remaining'
+    if not fresh and message!='Ready':return 'UV state unknown — connection lost'
+    if fresh and state.get('uvactive'):return 'UV active — timer unavailable'
+    return message
 
 
 def orient_camera_frame(image,name):
@@ -2276,7 +2310,7 @@ class EngineeringLotusUI(LotusUI):
         items=[('Home',self.show_home,'home'),('Live View',self.show_live,'live'),
                ('Alignment',self.show_alignment,'alignment'),
                ('Engineering',self.show_engineering,'engineering'),
-               ('Fan Control',self.show_fan,'fan'),
+               ('UV Cure',self.show_cure,'cure'),('Fan Control',self.show_fan,'fan'),
                ('Verification',self.show_verification,'verification'),
                ('Manual Control',self.show_manual,'manual'),('Logs',self.show_logs,'logs'),
                ('Settings',self.show_settings,'settings'),
