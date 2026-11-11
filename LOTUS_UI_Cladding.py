@@ -1784,6 +1784,7 @@ def stable_calibration_window(frames):
         variances.append(float(cov[1,1]));slope_variances.append(float(cov[0,0]));residuals.append(rms)
     result=dict(frames[-1]);result.update(offsets=estimates[:2],gaps=estimates[2:],sampling_window={
         'frames':7,'start_stamps':frames[0]['stamps'],'end_stamps':frames[-1]['stamps'],
+        'sample_stamps':stamps.tolist(),'sample_values':values.tolist(),
         'drift_px_per_s':slopes,'estimate_variance_px2':variances,
         'drift_variance':slope_variances,'residual_rms_px':residuals})
     return result
@@ -1797,11 +1798,44 @@ def drift_corrected_calibration(before,after):
     velocity_var=np.asarray(pre['drift_variance'])+np.asarray(post['drift_variance'])
     if np.any(np.abs(next_velocity-velocity)>np.maximum(.3,3*np.sqrt(velocity_var))):
         raise ValueError('Drift changed during the measurement; motor response cannot be isolated.')
-    dt=np.asarray([after['stamps'][i%2]-before['stamps'][i%2] for i in range(4)])
     raw=np.asarray(after['offsets']+after['gaps'])-np.asarray(before['offsets']+before['gaps'])
-    corrected=raw-velocity*dt
-    uncertainty=np.sqrt(np.asarray(pre['estimate_variance_px2'])+np.asarray(post['estimate_variance_px2'])+dt**2*np.asarray(pre['drift_variance']))
-    return corrected,uncertainty,raw
+    if not all('sample_values' in w and 'sample_stamps' in w for w in (pre,post)):
+        raise ValueError('Repeat calibration to capture paired sampling windows.')
+    # Interrupted regression: fit a shared drift and a separate motor step to
+    # ALL before/after samples. Extrapolating only the short BEFORE slope can
+    # subtract real movement and overstate uncertainty across a long move.
+    pre_values=np.asarray(pre['sample_values'],float);post_values=np.asarray(post['sample_values'],float)
+    pre_stamps=np.asarray(pre['sample_stamps'],float);post_stamps=np.asarray(post['sample_stamps'],float)
+    corrected=[];uncertainty=[]
+    for i in range(4):
+        t=np.concatenate((pre_stamps[:,i%2],post_stamps[:,i%2]))
+        y=np.concatenate((pre_values[:,i],post_values[:,i]))
+        step=np.concatenate((np.zeros(len(pre_values)),np.ones(len(post_values))))
+        design=np.column_stack((np.ones(len(t)),t-t.mean(),step))
+        fit=np.linalg.lstsq(design,y,rcond=None)[0]
+        residual=y-design@fit
+        variance=max(.04,float(residual@residual/(len(t)-3)))
+        covariance=np.linalg.inv(design.T@design)*variance
+        corrected.append(float(fit[2]));uncertainty.append(float(np.sqrt(covariance[2,2])))
+    return np.asarray(corrected),np.asarray(uncertainty),raw
+
+
+def validate_calibration_response(axis,change,uncertainty,raw):
+    """Validate the observable controlled by this axis; preserve absolute floors."""
+    import numpy as np
+    change=np.asarray(change,float);uncertainty=np.asarray(uncertainty,float);raw=np.asarray(raw,float)
+    if change.shape!=(4,) or uncertainty.shape!=(4,) or not np.isfinite([change,uncertainty,raw]).all():
+        raise ValueError('Invalid calibration measurements.')
+    if axis=='Z':
+        required=np.maximum(2.,3*uncertainty[2:])
+        if change[2]*change[3]<=0 or np.any(np.abs(change[2:])<required):
+            raise ValueError(f'Z gap change X {change[2]:+.2f}, Y {change[3]:+.2f} px; required X {required[0]:.2f}, Y {required[1]:.2f} px in the same direction. Raw X {raw[2]:+.2f}, Y {raw[3]:+.2f} px. Calibration not accepted; details saved in session export.')
+    else:
+        # Gap noise is unrelated to evidence of X/Y lateral movement.
+        movement=float(np.linalg.norm(change[:2]));required=max(.5,3*float(np.linalg.norm(uncertainty[:2])))
+        if movement<required:
+            raise ValueError(f'{axis} lateral change {movement:.2f} px; required {required:.2f} px above measured noise. Components X {change[0]:+.2f}, Y {change[1]:+.2f}; raw X {raw[0]:+.2f}, Y {raw[1]:+.2f} px. Calibration not accepted; details saved in session export.')
+
 
 
 
@@ -2825,7 +2859,7 @@ class EngineeringLotusUI(LotusUI):
 
     def auto_xy_signature(self,observation):
         # Calibration is specific to view assignment, scale in pixels, ROI and detector tuning.
-        return json.loads(json.dumps({'xyz_schema':7,'detector_revision':'cladding-tip-envelope-v4','camera_calibrations':self.calibrations,'holder_layout':HOLDER_LAYOUT,'cameras':self.camera_order,'sizes':observation['sizes'],
+        return json.loads(json.dumps({'xyz_schema':8,'detector_revision':'cladding-tip-envelope-v4','camera_calibrations':self.calibrations,'holder_layout':HOLDER_LAYOUT,'cameras':self.camera_order,'sizes':observation['sizes'],
             'roi':self.rois,'vision':self.vision_options,'firmware':self.hw.snapshot().get('firmware')},sort_keys=True))
 
     def auto_xy_set_text(self,text):
@@ -2850,7 +2884,7 @@ class EngineeringLotusUI(LotusUI):
         self.auto_xy_stop('Stopped for calibration');self.end_jog()
         top=tk.Toplevel(self);top.title('Automatic motor response calibration')
         self.auto_xy_calibration_window=top
-        tk.Label(top,text='Each button automatically captures BEFORE frames with noise/drift estimates, moves once, confirms the controller,\nthen captures AFTER frames with noise/drift estimates. Do not jog other controls during a measurement.\nChoose a burst for each axis (1–100 pulses). Measure BOTH directions with the same count.\nZ runs at 500 pulses/s; X/Y at 100. Measure Z OPENING first, then reverse.\nBoth Z directions must be measurable and consistent. Keep both cameras LIVE and UV OFF.',justify='left').pack(padx=12,pady=10)
+        tk.Label(top,text='Each button captures BEFORE frames, moves once, confirms the controller,\nthen captures AFTER frames. Both windows are fitted together to separate drift from movement.\nDo not jog other controls during a measurement.\nChoose a burst for each axis (1–100 pulses). Measure BOTH directions with the same count.\nZ runs at 500 pulses/s; X/Y at 100. Measure Z OPENING first, then reverse.\nBoth Z directions must be measurable and consistent. Keep both cameras LIVE and UV OFF.',justify='left').pack(padx=12,pady=10)
         status=tk.Label(top,text='Choose an axis measurement.',justify='left',wraplength=720);status.pack(padx=12,pady=10)
         job={};controls=[];counts={}
         count_row=tk.Frame(top);count_row.pack(padx=10,pady=6)
@@ -2924,11 +2958,10 @@ class EngineeringLotusUI(LotusUI):
                                 attempt={'axis':axis,'pulses':pulses,'recorded_at':datetime.now().isoformat(),'before':start_obs,'after':measured,'sent_at':job['sent_at'],'response_px_per_pulse':response.tolist(),'automatic_capture':True,'raw_change_px':raw_change.tolist(),'drift_corrected_change_px':corrected.tolist(),'response_uncertainty_px':uncertainty.tolist()}
                                 if not hasattr(self,'calibration_attempts'):self.calibration_attempts=[]
                                 self.calibration_attempts.append(attempt);self.calibration_attempts=self.calibration_attempts[-100:]
-                                if axis=='Z' and (response[2]*response[3]<=0 or np.any(np.abs(corrected[2:])<np.maximum(2,3*uncertainty[2:]))):
-                                    attempt['rejected']='Z gap direction or displacement'
-                                    raise ValueError(f'Z measured X {response[2]*pulses:+.2f}, Y {response[3]*pulses:+.2f} px. Drift-corrected change must exceed 2 px AND 3x estimated noise in both views, in the same direction. Details saved in session export.')
-                                if np.linalg.norm(corrected)<max(.5,3*float(np.linalg.norm(uncertainty))):raise ValueError('Motor response is too small to distinguish from measured noise/drift.')
-                                if axis!='Z' and np.linalg.norm(corrected[:2])<max(.5,3*float(np.linalg.norm(uncertainty[:2]))):raise ValueError('Lateral response below measured noise; choose a larger bounded calibration burst.')
+                                try:validate_calibration_response(axis,corrected,uncertainty,raw_change)
+                                except ValueError as exc:
+                                    attempt['rejected']=str(exc)
+                                    raise
                                 model=dict(self.auto_xy_model) if self.auto_xy_model.get('signature')==job['signature'] else {'columns':{}}
                                 model['columns']=dict(model.get('columns',{}))
                                 all_samples=dict(model.get('axis_samples',{}))
