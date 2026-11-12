@@ -137,6 +137,57 @@ class CameraFeeds:
 # =============================================================================
 # ESP32-S3 USB serial service
 # =============================================================================
+class BatteryEstimate:
+    """Display-only, generic 3S Li-ion voltage estimate; not a calibrated fuel gauge.
+
+    PB120B1 label: 11.1 V / 12.8 Ah, 9–12.6 V output. Intermediate
+    points are a heuristic, NOT a manufacturer discharge curve. Load, age,
+    temperature and charging affect accuracy. Never used for hardware control.
+    """
+    CURVE = ((9.0, 0), (9.9, 5), (10.5, 10), (10.8, 20),
+             (11.1, 35), (11.4, 50), (11.7, 65), (12.0, 80),
+             (12.3, 90), (12.6, 100))
+
+    def __init__(self):
+        self.samples = deque(maxlen=30)
+        self.last_stamp = None
+
+    def reset(self):
+        self.samples.clear()
+        self.last_stamp = None
+
+    def update(self, state, source, now):
+        if source != 'Battery alone':
+            self.reset()
+            return None, 'External / charging'
+        try:
+            voltage = float(state.get('voltage', float('nan')))
+            stamp = float(state.get('_status_monotonic', float('nan')))
+            valid = (state.get('connected') and state.get('inaok') == 1
+                     and math.isfinite(voltage) and math.isfinite(stamp)
+                     and 0 <= now - stamp < 3 and 8.0 <= voltage <= 12.8)
+        except (TypeError, ValueError):
+            valid = False
+        if not valid:
+            self.reset()
+            return None, 'No battery data'
+        if self.samples and stamp - self.samples[-1][0] >= 3:
+            self.reset()
+        if stamp != self.last_stamp:
+            self.samples.append((stamp, voltage))
+            self.last_stamp = stamp
+        recent = sorted(v for t, v in self.samples if 0 <= now - t <= 10)
+        voltage = recent[len(recent) // 2]
+        percent = 0.0 if voltage <= self.CURVE[0][0] else 100.0
+        for (lo, a), (hi, b) in zip(self.CURVE, self.CURVE[1:]):
+            if lo <= voltage <= hi:
+                percent = a + (b - a) * (voltage - lo) / (hi - lo)
+                break
+        # Five-percent increments avoid suggesting precision the sensor cannot give.
+        percent = int(5 * round(percent / 5))
+        return percent, ('Low' if percent <= 20 else 'Estimated')
+
+
 class ESP32Link:
     """Verified, reconnecting USB link to the LOTUS ESP32-S3 controller."""
 
@@ -490,6 +541,7 @@ class LotusUI(tk.Tk):
             'UV intensity': '50%',
             'Camera lighting': '50%',
             'Fan speed': 'Automatic',
+            'Power source': 'Battery alone',
         }
         saved = {}
         try:
@@ -596,7 +648,7 @@ class LotusUI(tk.Tk):
         wrap = tk.Frame(self.status, bg=WHITE)
         wrap.pack(fill='both', expand=True, padx=8, pady=6)
         for index, name in enumerate(('Raspberry Pi', 'ESP32', 'Motors',
-                                      'Humidity', 'Fan', 'UV System')):
+                                      'Humidity', 'Fan', 'UV System', 'Battery')):
             cell = tk.Frame(wrap, bg=WHITE)
             cell.pack(side='left', expand=True, fill='both')
             dot = tk.Label(cell, text='●', font=(FONT, 11, 'bold'), fg=MUTED,
@@ -638,6 +690,7 @@ class LotusUI(tk.Tk):
             'Fan': (fan_text, GREEN if connected else MUTED),
             'UV System': (uv_text, PURPLE2 if connected and
                           state.get('uvactive') else MUTED),
+            'Battery': self.battery_display(state),
         }
         for name, (text, color) in items.items():
             dot, value = self.status_cells[name]
@@ -1243,7 +1296,7 @@ class LotusUI(tk.Tk):
             ('Ambient / Humidity', f"{self.fmt_num(state.get('ambient'),'°C')} / {self.fmt_num(state.get('humidity'),'%')}  •  SHT41 {sht_health}", PURPLE),
             ('Fan', f"{state.get('fanrpm',0)} RPM  •  {state.get('fanpct',0)}%" + (' AUTO' if state.get('fanauto') else ''), GREEN),
             ('UV System', f"{state.get('uv',0)}%" if state.get('uvactive') else 'OFF', PURPLE if state.get('uvactive') else MUTED),
-            ('Input Voltage', f"{self.fmt_num(state.get('voltage'),'V',3)}  •  INA260 {ina_health}", PURPLE),
+            ('Input Voltage', f"{self.fmt_num(state.get('voltage'),'V',3)}  •  INA260 {ina_health}\nBattery: {self.battery_display(state)[0]}", PURPLE),
             ('Input Current', self.fmt_num(state.get('current'), 'mA', 1), PURPLE),
             ('Input Power', self.fmt_num(state.get('power'), 'W', 2), PURPLE),
             ('Stage Position', f"X {state.get('xpos',0)}  Y {state.get('ypos',0)}  Z {state.get('zpos',0)} pulses", TEXT),
@@ -1280,6 +1333,7 @@ class LotusUI(tk.Tk):
             'UV intensity': ('25%', '50%', '75%', '100%'),
             'Camera lighting': ('Automatic', 'Off', '25%', '50%', '75%', '100%'),
             'Fan speed': ('Automatic', '0%', '25%', '50%', '75%', '100%'),
+            'Power source': ('Battery alone', 'External / charging'),
         }
 
     def show_settings(self):
@@ -1296,6 +1350,8 @@ class LotusUI(tk.Tk):
             menu.config(bg=PLIGHT, fg=PURPLE, highlightthickness=0,
                         width=13, font=(FONT, 9))
             menu.pack(side='right', padx=18)
+        tk.Label(main, text='Battery: rough TalentCell PB120B1 voltage estimate. Select External / charging when plugged in.\nLoad and temperature affect the estimate; remaining runtime is not measured.',
+                 bg=BG, fg=MUTED, font=(FONT, 8), justify='left', wraplength=650).pack(anchor='w')
         row = tk.Frame(main, bg=BG)
         row.pack(fill='x', pady=5)
         self.button(row, 'Swap Live X / Y Cameras', self.swap_cameras).pack(side='left')
@@ -1304,6 +1360,8 @@ class LotusUI(tk.Tk):
         self.button(row, 'Ping ESP32', lambda: self.send_hw('PING')).pack(side='left')
 
     def save_preference(self, key, value):
+        if key == 'Power source' and hasattr(self, '_battery_estimate'):
+            self._battery_estimate.reset()
         if key == 'Fan speed':
             self.apply_hardware_preference(key, value)
             return
@@ -1385,6 +1443,15 @@ class LotusUI(tk.Tk):
         self.home_status_subtitle.config(text=subtitle)
         self.home_temp_value.config(text=self.fmt_num(state.get('pcb'), '°C'))
 
+    def battery_display(self, state):
+        if not hasattr(self, '_battery_estimate'):
+            self._battery_estimate = BatteryEstimate()
+        percent, status = self._battery_estimate.update(
+            state, self.preferences.get('Power source', 'Battery alone'), time.monotonic())
+        if percent is None:
+            return status, MUTED
+        return f'~{percent}% est.' + (' LOW' if status == 'Low' else ''), (RED if status == 'Low' else GREEN)
+
     def update_diagnostics_labels(self):
         if not self.diag_value_labels:
             return
@@ -1399,7 +1466,7 @@ class LotusUI(tk.Tk):
             'Ambient / Humidity': f"{self.fmt_num(state.get('ambient'),'°C')} / {self.fmt_num(state.get('humidity'),'%')}  •  SHT41 {'OK' if state.get('shtok') else 'NO DATA'}",
             'Fan': f"{state.get('fanrpm',0)} RPM  •  {state.get('fanpct',0)}%" + (' AUTO' if state.get('fanauto') else ''),
             'UV System': f"{state.get('uv',0)}%" if state.get('uvactive') else 'OFF',
-            'Input Voltage': f"{self.fmt_num(state.get('voltage'),'V',3)}  •  INA260 {'OK' if state.get('inaok') else 'NO DATA'}",
+            'Input Voltage': f"{self.fmt_num(state.get('voltage'),'V',3)}  •  INA260 {'OK' if state.get('inaok') else 'NO DATA'}\nBattery: {self.battery_display(state)[0]}",
             'Input Current': self.fmt_num(state.get('current'), 'mA', 1),
             'Input Power': self.fmt_num(state.get('power'), 'W', 2),
             'Stage Position': f"X {state.get('xpos',0)}  Y {state.get('ypos',0)}  Z {state.get('zpos',0)} pulses",
@@ -3405,3 +3472,4 @@ class EngineeringLotusUI(LotusUI):
 
 if __name__ == '__main__':
     EngineeringLotusUI().mainloop()
+
