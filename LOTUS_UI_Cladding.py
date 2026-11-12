@@ -284,7 +284,7 @@ class ESP32Link:
                 continue
             key, value = token.split('=', 1)
             try:
-                if key in ('pcb', 'ambient', 'humidity', 'voltage', 'current', 'power'):
+                if key in ('pcb', 'ambient', 'humidity', 'voltage', 'current', 'power', 'light', 'uv'):
                     updates[key] = float(value)
                 else:
                     updates[key] = int(value)
@@ -551,8 +551,8 @@ class LotusUI(tk.Tk):
         self.preferences = {
             'Default step': 'Fine',
             'Cure duration': '300 s',
-            'UV intensity': '50%',
-            'Camera lighting': '50%',
+            'UV intensity': '12.5%',
+            'Camera lighting': '12.5%',
             'Fan speed': 'Automatic',
             'Power source': 'Battery alone',
         }
@@ -570,6 +570,11 @@ class LotusUI(tk.Tk):
         if saved.get('_Cure profile') != '300s-v1':
             self.preferences['Cure duration'] = '300 s'
         self.preferences['_Cure profile'] = '300s-v1'
+        # Reset older high-output LED settings once after upgrading to the 12.5% / 50% profile.
+        if saved.get('_LED safety profile') != '12p5-max50-v1':
+            self.preferences['UV intensity'] = '12.5%'
+            self.preferences['Camera lighting'] = '12.5%'
+        self.preferences['_LED safety profile'] = '12p5-max50-v1'
         try:
             self.data_dir.mkdir(parents=True, exist_ok=True)
             (self.data_dir/'settings.json').write_text(json.dumps(self.preferences,indent=2))
@@ -1343,8 +1348,8 @@ class LotusUI(tk.Tk):
         return {
             'Default step': ('Fine', 'Medium', 'Coarse'),
             'Cure duration': ('10 s', '20 s', '30 s', '60 s', '120 s', '180 s', '240 s', '300 s'),
-            'UV intensity': ('25%', '50%', '75%', '100%'),
-            'Camera lighting': ('Automatic', 'Off', '25%', '50%', '75%', '100%'),
+            'UV intensity': ('12.5%', '25%', '50%'),
+            'Camera lighting': ('Off', '12.5%', '25%', '50%'),
             'Fan speed': ('Automatic', '0%', '25%', '50%', '75%', '100%'),
             'Power source': ('Battery alone', 'External / charging'),
         }
@@ -1378,6 +1383,9 @@ class LotusUI(tk.Tk):
         if key == 'Fan speed':
             self.apply_hardware_preference(key, value)
             return
+        if key in ('UV intensity', 'Camera lighting') and value not in self.setting_choices()[key]:
+            messagebox.showerror('LED limit', 'LED level must be 50% or below.', parent=self)
+            return
         self.preferences[key] = value
         try:
             self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -1394,7 +1402,7 @@ class LotusUI(tk.Tk):
                 self.send_hw('FAN ' + value.rstrip('%'), popup_on_fail=False)
         elif key == 'Camera lighting':
             if value == 'Automatic':
-                self.send_hw('LIGHT 50', popup_on_fail=False)
+                self.send_hw('LIGHT 12.5', popup_on_fail=False)
             elif value == 'Off':
                 self.send_hw('LIGHT 0', popup_on_fail=False)
             else:
@@ -1579,7 +1587,10 @@ class LotusUI(tk.Tk):
             messagebox.showerror('Firmware update required',
                 f'This controller supports up to {maximum} seconds. Flash the included cure300 firmware for a 300-second cure.',parent=self)
             return
-        intensity = int(self.preferences['UV intensity'].rstrip('%'))
+        intensity = float(self.preferences['UV intensity'].rstrip('%'))
+        if not math.isfinite(intensity) or intensity <= 0 or intensity > 50:
+            messagebox.showerror('UV intensity limit', 'UV intensity must be greater than 0% and no more than 50%.', parent=self)
+            return
         if not messagebox.askyesno(
             'UV Safety Confirmation',
             'UV light can injure eyes and skin. Confirm the UV source is enclosed/'
