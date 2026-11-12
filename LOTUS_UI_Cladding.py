@@ -1745,7 +1745,7 @@ def lateral_take_up_retry(axis,retries,before,after,change,uncertainty):
 
 def coarse_motor_profile(axis):
     if axis not in ('X','Y','Z'):raise ValueError('Unknown motor axis.')
-    return (100 if axis=='Y' else 500),1000
+    return 500,1000
 
 
 def auto_xyz_plan(matrix,observation,scales,target_um,gap_tolerance_um,offset_tolerance_px,z_burst_pulses=1,axis_bursts=None):
