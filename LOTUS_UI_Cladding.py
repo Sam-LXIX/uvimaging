@@ -1731,6 +1731,18 @@ def auto_xy_plan(matrix, offsets, limit=5, gain=.4):
     return ('X','Y')[axis],pulses
 
 
+def lateral_take_up_retry(axis,retries,before,after,change,uncertainty):
+    """Permit at most three extra same-direction lateral bursts, never Z."""
+    import numpy as np
+    if axis not in ('X','Y') or retries>=3:return False
+    g=np.asarray(before['gaps'],float);next_g=np.asarray(after['gaps'],float)
+    if np.any(next_g<16) or np.any(g-next_g>np.maximum(3,g*.15)):
+        raise ValueError('Gap clearance changed during take-up; calibration stopped.')
+    lateral=float(np.linalg.norm(np.asarray(change)[:2]))
+    required=max(.5,3*float(np.linalg.norm(np.asarray(uncertainty)[:2])))
+    return lateral<required
+
+
 def coarse_motor_profile(axis):
     if axis not in ('X','Y','Z'):raise ValueError('Unknown motor axis.')
     return (100 if axis=='Y' else 500),1000
@@ -2947,7 +2959,7 @@ class EngineeringLotusUI(LotusUI):
         self.auto_xy_stop('Stopped for calibration');self.end_jog()
         top=tk.Toplevel(self);top.title('Automatic motor response calibration')
         self.auto_xy_calibration_window=top
-        tk.Label(top,text='Each button captures BEFORE frames, moves once, confirms the controller,\nthen captures AFTER frames. Each window uses 15 fresh frame pairs and filters isolated detection glitches.\nBoth windows are fitted together to separate drift from movement.\nDo not jog other controls during a measurement.\nCoarse defaults: X 500, Y 100, Z 500 pulses. Measure BOTH directions with the same count.\nAll axes run at 1000 pulses/s, matching manual Coarse. Measure Z OPENING first, then reverse.\nBoth Z directions must be measurable and consistent. Keep both cameras LIVE and UV OFF.',justify='left').pack(padx=12,pady=10)
+        tk.Label(top,text='Each button captures BEFORE frames, moves once, confirms the controller,\nthen captures AFTER frames. Each window uses 15 fresh frame pairs and filters isolated detection glitches.\nBoth windows are fitted together to separate drift from movement.\nX/Y may retry up to 3 extra same-direction bursts to take up slack; each is measured separately.\nZ never retries automatically. Do not jog other controls during a measurement.\nCoarse defaults: X 500, Y 100, Z 500 pulses. Measure BOTH directions with the same count.\nAll axes run at 1000 pulses/s, matching manual Coarse. Measure Z OPENING first, then reverse.\nBoth Z directions must be measurable and consistent. Keep both cameras LIVE and UV OFF.',justify='left').pack(padx=12,pady=10)
         status=tk.Label(top,text='Choose an axis measurement.',justify='left',wraplength=720);status.pack(padx=12,pady=10)
         job={};controls=[];counts={};result_labels={}
         results=tk.Frame(top);results.pack(fill='x',padx=12,pady=4)
@@ -2981,7 +2993,7 @@ class EngineeringLotusUI(LotusUI):
                 if not 1<=burst<=coarse_motor_profile(axis)[0]:raise ValueError('Burst exceeds the Coarse limit for this axis.')
                 job.update(axis=axis,direction=direction,pulses=direction*burst,
                            phase='before',phase_at=time.monotonic(),positions=obs['positions'],
-                           signature=signature,frames=[],last_stamps=[0,0])
+                           signature=signature,frames=[],last_stamps=[0,0],take_up_retries=0,initial_gaps=list(obs['gaps']))
                 for button in controls:button.config(state='disabled')
                 result_labels[(axis,direction)].config(text=('−' if direction<0 else '+')+': Measuring…')
                 status.config(text='Sampling BEFORE: 0/15 fresh frame pairs. No movement yet.')
@@ -3036,6 +3048,17 @@ class EngineeringLotusUI(LotusUI):
                                 try:validate_calibration_response(axis,corrected,uncertainty,raw_change)
                                 except ValueError as exc:
                                     attempt['rejected']=str(exc)
+                                    if lateral_take_up_retry(axis,job['take_up_retries'],{'gaps':job['initial_gaps']},measured,corrected,uncertainty):
+                                        retries=job['take_up_retries']+1
+                                        attempt['take_up_retry']=retries
+                                        # Re-sample BEFORE at this stopped position; the next
+                                        # burst is separately confirmed and measured, never queued.
+                                        job.update(phase='before',phase_at=now,positions=positions,
+                                                   frames=[],last_stamps=[0,0],take_up_retries=retries)
+                                        job.pop('after_frame',None)
+                                        status.config(text=f'{axis}: movement below noise. Taking up slack: retry {retries}/3, same direction, {abs(pulses)} pulses. Sampling a new BEFORE window.')
+                                        self.after(100,tick)
+                                        return
                                     raise
                                 model=dict(self.auto_xy_model) if self.auto_xy_model.get('signature')==job['signature'] else {'columns':{}}
                                 model['columns']=dict(model.get('columns',{}))
@@ -3043,7 +3066,9 @@ class EngineeringLotusUI(LotusUI):
                                 prior=all_samples.get(axis,{})
                                 directions=dict(prior.get('directions',{})) if prior.get('pulses')==abs(pulses) else {}
                                 directions['+' if pulses>0 else '-']=response.tolist()
-                                all_samples[axis]={'pulses':abs(pulses),'directions':directions}
+                                take_up=dict(prior.get('take_up_pulses',{})) if prior.get('pulses')==abs(pulses) else {}
+                                take_up['+' if pulses>0 else '-']=job['take_up_retries']*abs(pulses)
+                                all_samples[axis]={'pulses':abs(pulses),'directions':directions,'take_up_pulses':take_up}
                                 model['axis_samples']=all_samples;model['columns'].pop(axis,None)
                                 bursts=dict(model.get('axis_bursts',{}));bursts.pop(axis,None)
                                 if all(k in directions for k in ('+','-')):
@@ -3186,7 +3211,8 @@ class EngineeringLotusUI(LotusUI):
                 effect=float(np.linalg.norm(predicted))
                 along=float(np.dot(change,predicted)/max(effect,1e-9))
                 run['no_progress']=run['no_progress']+1 if along<max(.05,min(.25,effect*.2)) else 0
-                if run['no_progress']>=3:raise ValueError('No measurable progress after three corrections; check backlash or stalled motors.')
+                limit=4 if run['last_axis'] in ('X','Y') else 3
+                if run['no_progress']>=limit:raise ValueError('No measurable progress within bounded take-up allowance; inspect mechanics or motor drive.')
             if run['moves']>=40 or run['pulses']>=run['pulse_budget']:raise ValueError('Auto XYZ move/pulse budget reached.')
             if run['pulses']+abs(pulses)>run['pulse_budget']:raise ValueError('Auto XYZ pulse budget reached.')
             expected=list(obs['positions']);expected[('X','Y','Z').index(axis)]+=pulses
@@ -3196,7 +3222,7 @@ class EngineeringLotusUI(LotusUI):
             if not self.send_hw(f'MOVE {axis} {pulses} {speed}',popup_on_fail=False):raise ValueError('Motor command could not be sent.')
             self.auto_xy_pending={'sent_at':sent_at,'deadline':sent_at+4,'expected':expected}
             run['moves']+=1;run['pulses']+=abs(pulses);run['previous_norm']=norm
-            self.auto_xy_set_text(f'Auto XYZ ({angular_alignment_note(self.measurements,run["criteria"])}): {axis} {pulses:+d} pulses; offset {error[0]:+.2f}, {error[1]:+.2f} px; gaps {obs["gaps"][0]:.1f}/{obs["gaps"][1]:.1f} px; total {run["pulses"]}/{run["pulse_budget"]} pulses.')
+            self.auto_xy_set_text((f'X/Y take-up retry {run["no_progress"]}/3 • ' if run['no_progress'] and axis in ('X','Y') else '')+f'Auto XYZ ({angular_alignment_note(self.measurements,run["criteria"])}): {axis} {pulses:+d} pulses; offset {error[0]:+.2f}, {error[1]:+.2f} px; gaps {obs["gaps"][0]:.1f}/{obs["gaps"][1]:.1f} px; total {run["pulses"]}/{run["pulse_budget"]} pulses.')
         except Exception as exc:self.auto_xy_stop('Stopped: '+str(exc))
 
     def emergency_stop(self):
