@@ -526,6 +526,19 @@ BLACK = "#000000"
 FONT = "DejaVu Sans"
 
 
+def optical_loss_db(pin_mw, pout_mw):
+    """Compute optical loss in dB from positive input/output powers in the same units."""
+    pin_mw, pout_mw = float(pin_mw), float(pout_mw)
+    if not (math.isfinite(pin_mw) and math.isfinite(pout_mw)):
+        raise ValueError('Both optical powers must be finite numbers.')
+    if pin_mw <= 0 or pout_mw <= 0:
+        raise ValueError('Both optical powers must be greater than zero.')
+    # Equivalent to -10*log10(Pout / Pin), avoiding extreme ratio underflow.
+    return 10.0 * (math.log10(pin_mw) - math.log10(pout_mw))
+
+
+
+
 class LotusUI(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -1606,33 +1619,76 @@ class LotusUI(tk.Tk):
 
     def show_verification(self):
         main = self.page_shell('verification', 'Verification',
-                               'Record an external measurement after curing')
+                               'Calculate optical insertion loss from measured input/output powers')
         outer, panel = self.bordered(main)
         outer.pack(fill='both', expand=True)
         tk.Label(panel, text='Optical Splice Loss', bg=WHITE, fg=PURPLE,
-                 font=(FONT, 20, 'bold')).pack(pady=(25, 10))
-        tk.Label(panel, text='Enter the measured loss in dB. No automatic pass/fail is assigned.',
-                 bg=WHITE, fg=MUTED, font=(FONT, 9)).pack()
-        entry = tk.Entry(panel, font=(FONT, 18), width=12, justify='center')
-        entry.pack(pady=20)
+                 font=(FONT, 20, 'bold')).pack(pady=(12, 5))
+        tk.Label(panel, text='Loss (dB) = -10 log10(Pout / Pin)  •  Enter both optical powers in mW.',
+                 bg=WHITE, fg=MUTED, font=(FONT, 10), wraplength=660).pack(pady=(0, 9))
+
+        powers = tk.Frame(panel, bg=WHITE)
+        powers.pack(pady=4)
+        pin_text = tk.StringVar()
+        pout_text = tk.StringVar()
+        for column, (label, variable) in enumerate((('Input power Pin (mW)', pin_text),
+                                                     ('Output power Pout (mW)', pout_text))):
+            cell = tk.Frame(powers, bg=WHITE)
+            cell.grid(row=0, column=column, padx=15)
+            tk.Label(cell, text=label, bg=WHITE, fg=TEXT, font=(FONT, 10)).pack()
+            tk.Entry(cell, textvariable=variable, font=(FONT, 17), width=14,
+                     justify='center').pack(pady=(4, 0))
+
+        loss_text = tk.StringVar(value='— dB')
+        detail_text = tk.StringVar(value='Waiting for measured optical powers.')
+
+        def measured_values():
+            pin = float(pin_text.get().strip())
+            pout = float(pout_text.get().strip())
+            return pin, pout, optical_loss_db(pin, pout)
+
+        def update_loss(*_):
+            try:
+                pin, pout, loss = measured_values()
+            except (ValueError, OverflowError):
+                loss_text.set('— dB')
+                detail_text.set('Enter finite, positive optical powers to calculate loss.')
+                return
+            loss_text.set(f'{loss:.3f} dB')
+            if loss < 0:
+                detail_text.set('Pout exceeds Pin: apparent gain. Check the measurement setup.')
+            else:
+                detail_text.set(f'Transmitted power: {100.0 * pout / pin:.2f}% of input.')
+
+        pin_text.trace_add('write', update_loss)
+        pout_text.trace_add('write', update_loss)
+        tk.Label(panel, textvariable=loss_text, bg=WHITE, fg=PURPLE,
+                 font=(FONT, 26, 'bold')).pack(pady=(13, 1))
+        tk.Label(panel, textvariable=detail_text, bg=WHITE, fg=MUTED,
+                 font=(FONT, 9), wraplength=680).pack(pady=(0, 8))
 
         def save():
             try:
-                value = float(entry.get())
-                if not math.isfinite(value) or value < 0:
-                    raise ValueError('Enter a finite, nonnegative loss in dB.')
+                pin, pout, loss = measured_values()
                 self.data_dir.mkdir(parents=True, exist_ok=True)
                 with (self.data_dir / 'verification.jsonl').open('a') as out:
                     out.write(json.dumps({
                         'time': datetime.now().isoformat(),
-                        'manual_loss_db': value,
+                        'input_power_mw': pin,
+                        'output_power_mw': pout,
+                        'loss_db': loss,
+                        'manual_loss_db': loss,
+                        'method': 'calculated_from_manual_optical_power_readings',
                     }) + '\n')
-                messagebox.showinfo('Saved', 'Measurement recorded in Logs.', parent=self)
-            except (ValueError, OSError) as exc:
+                messagebox.showinfo('Saved', f'Calculated loss: {loss:.3f} dB\nSaved in Logs.', parent=self)
+            except (ValueError, OverflowError):
+                messagebox.showerror('Invalid optical powers',
+                                     'Enter finite, positive values for Pin and Pout (both in mW).', parent=self)
+            except OSError as exc:
                 messagebox.showerror('Unable to save', str(exc), parent=self)
 
-        self.button(panel, 'Save Measurement', save, primary=True).pack(pady=8)
-        self.button(panel, '← Splicing Procedure', self.show_splice).pack(pady=8)
+        self.button(panel, 'Save Calculated Loss', save, primary=True).pack(pady=5)
+        self.button(panel, '← Splicing Procedure', self.show_splice).pack(pady=5)
 
     def show_logs(self):
         main = self.page_shell('logs', 'Logs & Statistics',
