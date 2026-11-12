@@ -1084,7 +1084,7 @@ class LotusUI(tk.Tk):
                   padx=35, pady=10).pack(pady=12)
 
     def motor_profile(self, axis='X'):
-        # Defaults: Fine=1, Medium=50, Coarse=500 for X/Z, 100 for Y.
+        # Defaults: Fine=1, Medium=50, Coarse=500 for all axes.
         # Pulse counts, NOT distances: stage displacement depends on gearing.
         profile = self.preferences.get('Default step', 'Fine')
         if profile == 'Coarse':
@@ -1748,7 +1748,7 @@ def coarse_motor_profile(axis):
     return 500,1000
 
 
-def auto_xyz_plan(matrix,observation,scales,target_um,gap_tolerance_um,offset_tolerance_px,z_burst_pulses=1,axis_bursts=None):
+def auto_xyz_plan(matrix,observation,scales,target_um,gap_tolerance_um,offset_tolerance_px,z_burst_pulses=1,axis_bursts=None,direction_samples=None):
     """One verified calibrated burst per correction; no assumed sub-burst resolution."""
     import numpy as np
     if isinstance(z_burst_pulses,bool) or int(z_burst_pulses)!=z_burst_pulses or not 1<=z_burst_pulses<=500:raise ValueError('Invalid calibrated Z burst size.')
@@ -1775,21 +1775,25 @@ def auto_xyz_plan(matrix,observation,scales,target_um,gap_tolerance_um,offset_to
     if np.linalg.cond(weighted)>50:raise ValueError('XYZ calibration is singular or too coupled.')
     choices=[];baseline=float(np.dot(error*weights,error*weights))
     for axis in axes:
-        col=weighted[:,axis]
-        raw=-.4*float(np.dot(col,error*weights))/float(np.dot(col,col))
-        cap=axis_bursts[('X','Y','Z')[axis]] if axis_bursts is not None else (z_burst_pulses if axis==2 else 5)
-        pulses=(int(cap if raw>0 else -cap) if abs(raw)>1e-9 else 0) if axis==2 or axis_bursts is not None else int(np.clip(np.round(raw),-cap,cap))
-        if pulses==0 and abs(raw)>1e-9:pulses=1 if raw>0 else -1
-        predicted_gaps=g+j[2:,axis]*pulses
-        if np.any(predicted_gaps<16):continue
-        if axis_bursts is not None or (axis==2 and z_burst_pulses>1):
-            # Leave room for twice the observed displacement and never command
-            # a closing burst predicted below the configured target range.
-            if np.any(g+2*j[2:,axis]*pulses<16):continue
-            if np.any(predicted_gaps*scale<target_um-gap_tolerance_um):continue
-        predicted=(error+j[:,axis]*pulses)*weights
-        improvement=baseline-float(np.dot(predicted,predicted))
-        if improvement>.001:choices.append((improvement,axis,pulses))
+        name=('X','Y','Z')[axis]
+        for sign in ((-1,1) if direction_samples is not None else (0,)):
+            response=np.asarray(direction_samples[name]['+' if sign>0 else '-'],float) if sign else j[:,axis]
+            if response.shape!=(4,) or not np.isfinite(response).all():raise ValueError('Invalid directional response.')
+            col=response*weights
+            raw=-.4*float(np.dot(col,error*weights))/float(np.dot(col,col))
+            cap=axis_bursts[('X','Y','Z')[axis]] if axis_bursts is not None else (z_burst_pulses if axis==2 else 5)
+            pulses=int(sign*cap) if sign else (int(cap if raw>0 else -cap) if abs(raw)>1e-9 else 0) if axis==2 or axis_bursts is not None else int(np.clip(np.round(raw),-cap,cap))
+            if pulses==0 and abs(raw)>1e-9:pulses=1 if raw>0 else -1
+            predicted_gaps=g+response[2:]*pulses
+            if np.any(predicted_gaps<16):continue
+            if axis_bursts is not None or (axis==2 and z_burst_pulses>1):
+                # Leave room for twice the observed displacement and never command
+                # a closing burst predicted below the configured target range.
+                if np.any(g+2*response[2:]*pulses<16):continue
+                if np.any(predicted_gaps*scale<target_um-gap_tolerance_um):continue
+            predicted=(error+response*pulses)*weights
+            improvement=baseline-float(np.dot(predicted,predicted))
+            if improvement>.001:choices.append((improvement,axis,pulses))
     if not choices:raise ValueError('No safe calibrated correction improves geometry; burst resolution may be too coarse for this target.')
     _,axis,pulses=max(choices)
     return ('X','Y','Z')[axis],pulses,baseline**.5
@@ -1915,21 +1919,49 @@ def validate_calibration_response(axis,change,uncertainty,raw):
 
 
 
-def calibrated_axis_burst(axis,samples,count):
+def repeatable_direction(axis,trials,count):
+    """Two independently captured, signed-normalized moves per direction."""
+    import numpy as np
+    if len(trials)!=2:raise ValueError('Each direction needs two successful measured moves.')
+    rows=np.asarray(trials,float)
+    if rows.shape!=(2,4) or not np.isfinite(rows).all():raise ValueError('Invalid repeated motor measurements.')
+    relevant=rows[:,2:] if axis=='Z' else rows[:,:2]
+    if axis=='Z':
+        if np.any(np.abs(relevant)*count<2) or np.any(relevant[0]*relevant[1]<=0) or np.any(relevant[:,0]*relevant[:,1]<=0):
+            raise ValueError('Repeated Z moves must measurably change both gaps in the same direction.')
+        ratio=np.maximum(abs(relevant[0]),abs(relevant[1]))/np.minimum(abs(relevant[0]),abs(relevant[1]))
+        if np.any(ratio>1.5):raise ValueError('Repeated Z moves differ by over 50%; retry after inspecting mechanical response.')
+    else:
+        lengths=np.linalg.norm(relevant,axis=1)
+        if min(lengths)*count<.5 or max(lengths)>1.5*min(lengths):raise ValueError('Repeated lateral response is too small or varies by over 50%.')
+        if np.dot(relevant[0],relevant[1])/np.prod(lengths)<.9:raise ValueError('Repeated lateral moves changed image direction.')
+    return rows.mean(axis=0).tolist()
+
+
+def direction_response(model,axis,pulses):
+    import numpy as np
+    return np.asarray(model['axis_samples'][axis]['directions']['+' if pulses>0 else '-'],float)
+
+
+def calibrated_axis_burst(axis,samples,count,trials=None):
     import numpy as np
     if isinstance(count,bool) or int(count)!=count or not 1<=count<=coarse_motor_profile(axis)[0]:raise ValueError('Burst exceeds the Coarse limit for this axis.')
     if not all(k in samples for k in ('+','-')):raise ValueError('Measure BOTH directions at the same pulse count.')
     a=np.asarray(samples['+'],float);b=np.asarray(samples['-'],float)
     if a.shape!=(4,) or b.shape!=(4,) or not np.isfinite([a,b]).all():raise ValueError('Invalid motor response.')
+    if trials is not None:
+        for sign,expected in (('+',a),('-',b)):
+            verified=repeatable_direction(axis,trials.get(sign,[]),count)
+            if not np.allclose(verified,expected):raise ValueError('Stored direction response differs from its repeat measurements.')
     if axis=='Z':
         if np.any(a[2:]*b[2:]<=0) or a[2]*a[3]<=0:raise ValueError('Opposite Z commands did not produce opposite gap changes.')
         if min(np.abs(a[2:]).min(),np.abs(b[2:]).min())*count<2:raise ValueError('Z response below measurable gap resolution.')
         ratios=np.maximum(abs(a[2:]),abs(b[2:]))/np.minimum(abs(a[2:]),abs(b[2:]))
-        if np.any(ratios>2):raise ValueError('Z responses differ by over 2x; resolution/backlash is not verified.')
+        if trials is None and np.any(ratios>2):raise ValueError('Z responses differ by over 2x; repeat both directions before using separate gains.')
     else:
         # X/Y must produce repeatable LATERAL response, not only a changing gap.
         la=np.linalg.norm(a[:2]);lb=np.linalg.norm(b[:2])
-        if min(la,lb)*count<.5 or max(la,lb)>2*min(la,lb):raise ValueError('Lateral motor response too small or inconsistent.')
+        if min(la,lb)*count<.5 or (trials is None and max(la,lb)>2*min(la,lb)):raise ValueError('Lateral motor response too small or inconsistent.')
         if np.dot(a[:2],b[:2])/(la*lb)<.7:raise ValueError('Opposite lateral commands have inconsistent image directions.')
     return ((a+b)/2).tolist()
 
@@ -2934,7 +2966,7 @@ class EngineeringLotusUI(LotusUI):
 
     def auto_xy_signature(self,observation):
         # Calibration is specific to view assignment, scale in pixels, ROI and detector tuning.
-        return json.loads(json.dumps({'xyz_schema':10,'camera_orientation':{'X VIEW':'native','Y VIEW':'mirror-horizontal'},'detector_revision':'cladding-tip-envelope-v4','camera_calibrations':self.calibrations,'holder_layout':HOLDER_LAYOUT,'cameras':self.camera_order,'sizes':observation['sizes'],
+        return json.loads(json.dumps({'xyz_schema':11,'camera_orientation':{'X VIEW':'native','Y VIEW':'mirror-horizontal'},'detector_revision':'cladding-tip-envelope-v4','camera_calibrations':self.calibrations,'holder_layout':HOLDER_LAYOUT,'cameras':self.camera_order,'sizes':observation['sizes'],
             'roi':self.rois,'vision':self.vision_options,'firmware':self.hw.snapshot().get('firmware')},sort_keys=True))
 
     def auto_xy_set_text(self,text):
@@ -2959,7 +2991,7 @@ class EngineeringLotusUI(LotusUI):
         self.auto_xy_stop('Stopped for calibration');self.end_jog()
         top=tk.Toplevel(self);top.title('Automatic motor response calibration')
         self.auto_xy_calibration_window=top
-        tk.Label(top,text='Each button captures BEFORE frames, moves once, confirms the controller,\nthen captures AFTER frames. Each window uses 15 fresh frame pairs and filters isolated detection glitches.\nBoth windows are fitted together to separate drift from movement.\nX/Y may retry up to 3 extra same-direction bursts to take up slack; each is measured separately.\nZ never retries automatically. Do not jog other controls during a measurement.\nCoarse defaults: X 500, Y 100, Z 500 pulses. Measure BOTH directions with the same count.\nAll axes run at 1000 pulses/s, matching manual Coarse. Measure Z OPENING first, then reverse.\nBoth Z directions must be measurable and consistent. Keep both cameras LIVE and UV OFF.',justify='left').pack(padx=12,pady=10)
+        tk.Label(top,text='Each button measures two same-direction moves, with a fresh BEFORE/AFTER capture for each,\nthen captures AFTER frames. Each window uses 15 fresh frame pairs and filters isolated detection glitches.\nBoth windows are fitted together to separate drift from movement. Two successful moves verify each direction.\nX/Y may retry up to 3 extra same-direction bursts to take up slack; each is measured separately.\nZ never retries automatically. Do not jog other controls during a measurement.\nCoarse defaults: X 500, Y 500, Z 500 pulses. Measure BOTH directions with the same count.\nAll axes run at 1000 pulses/s, matching manual Coarse. Measure Z OPENING first, then reverse.\nBoth Z directions must be measurable and consistent. Keep both cameras LIVE and UV OFF.',justify='left').pack(padx=12,pady=10)
         status=tk.Label(top,text='Choose an axis measurement.',justify='left',wraplength=720);status.pack(padx=12,pady=10)
         job={};controls=[];counts={};result_labels={}
         results=tk.Frame(top);results.pack(fill='x',padx=12,pady=4)
@@ -2993,7 +3025,7 @@ class EngineeringLotusUI(LotusUI):
                 if not 1<=burst<=coarse_motor_profile(axis)[0]:raise ValueError('Burst exceeds the Coarse limit for this axis.')
                 job.update(axis=axis,direction=direction,pulses=direction*burst,
                            phase='before',phase_at=time.monotonic(),positions=obs['positions'],
-                           signature=signature,frames=[],last_stamps=[0,0],take_up_retries=0,initial_gaps=list(obs['gaps']))
+                           signature=signature,frames=[],last_stamps=[0,0],take_up_retries=0,initial_gaps=list(obs['gaps']),trials=[],started_at=time.monotonic())
                 for button in controls:button.config(state='disabled')
                 result_labels[(axis,direction)].config(text=('−' if direction<0 else '+')+': Measuring…')
                 status.config(text='Sampling BEFORE: 0/15 fresh frame pairs. No movement yet.')
@@ -3005,6 +3037,7 @@ class EngineeringLotusUI(LotusUI):
                 import numpy as np
                 if not top.winfo_exists():self.hw.send('STOP');job.clear();return
                 now=time.monotonic();state=self.auto_xy_health()
+                if now-job['started_at']>180:raise ValueError('Calibration direction timed out after 180 seconds.')
                 if self.auto_xy_signature({'sizes':[self.measurements.get(n,{}).get('image_size',[]) for n in ('X VIEW','Y VIEW')]})!=job['signature']:
                     raise ValueError('Camera, scale, ROI or detector settings changed.')
                 positions=[int(state[k]) for k in ('xpos','ypos','zpos')]
@@ -3030,8 +3063,8 @@ class EngineeringLotusUI(LotusUI):
                                 axis=job['axis'];pulses=job['pulses']
                                 saved=self.auto_xy_model if self.auto_xy_model.get('signature')==job['signature'] else {}
                                 samples=saved.get('axis_samples',{}).get(axis,{}).get('directions',{})
-                                if samples:
-                                    sample=np.asarray(next(iter(samples.values())))
+                                if samples or job['trials']:
+                                    sample=np.asarray(job['trials'][-1] if job['trials'] else samples.get('+' if pulses>0 else '-',next(iter(samples.values()))))
                                     if np.any(np.asarray(measured['gaps'])+2*sample[2:]*pulses<16):raise ValueError('Insufficient clearance for Z burst.')
                                 expected=list(positions);expected[('X','Y','Z').index(axis)]+=pulses
                                 sent=time.monotonic();speed=coarse_motor_profile(axis)[1]
@@ -3048,6 +3081,7 @@ class EngineeringLotusUI(LotusUI):
                                 try:validate_calibration_response(axis,corrected,uncertainty,raw_change)
                                 except ValueError as exc:
                                     attempt['rejected']=str(exc)
+                                    if job['trials']:raise ValueError('Movement became unreliable during the repeat check; no calibration accepted.') from exc
                                     if lateral_take_up_retry(axis,job['take_up_retries'],{'gaps':job['initial_gaps']},measured,corrected,uncertainty):
                                         retries=job['take_up_retries']+1
                                         attempt['take_up_retry']=retries
@@ -3060,19 +3094,30 @@ class EngineeringLotusUI(LotusUI):
                                         self.after(100,tick)
                                         return
                                     raise
+                                job['trials'].append(response.tolist())
+                                attempt['repeat_number']=len(job['trials'])
+                                if len(job['trials'])<2:
+                                    job.update(phase='before',phase_at=now,positions=positions,frames=[],last_stamps=[0,0])
+                                    job.pop('after_frame',None)
+                                    status.config(text=f'{axis}: first measurable move captured. Sampling before a second same-direction move to verify repeatability.')
+                                    self.after(100,tick)
+                                    return
+                                response=np.asarray(repeatable_direction(axis,job['trials'],abs(pulses)))
                                 model=dict(self.auto_xy_model) if self.auto_xy_model.get('signature')==job['signature'] else {'columns':{}}
                                 model['columns']=dict(model.get('columns',{}))
                                 all_samples=dict(model.get('axis_samples',{}))
                                 prior=all_samples.get(axis,{})
                                 directions=dict(prior.get('directions',{})) if prior.get('pulses')==abs(pulses) else {}
                                 directions['+' if pulses>0 else '-']=response.tolist()
+                                trials=dict(prior.get('trials',{})) if prior.get('pulses')==abs(pulses) else {}
+                                trials['+' if pulses>0 else '-']=job['trials']
                                 take_up=dict(prior.get('take_up_pulses',{})) if prior.get('pulses')==abs(pulses) else {}
                                 take_up['+' if pulses>0 else '-']=job['take_up_retries']*abs(pulses)
-                                all_samples[axis]={'pulses':abs(pulses),'directions':directions,'take_up_pulses':take_up}
+                                all_samples[axis]={'pulses':abs(pulses),'directions':directions,'take_up_pulses':take_up,'trials':trials}
                                 model['axis_samples']=all_samples;model['columns'].pop(axis,None)
                                 bursts=dict(model.get('axis_bursts',{}));bursts.pop(axis,None)
                                 if all(k in directions for k in ('+','-')):
-                                    model['columns'][axis]=calibrated_axis_burst(axis,directions,abs(pulses));bursts[axis]=abs(pulses)
+                                    model['columns'][axis]=calibrated_axis_burst(axis,directions,abs(pulses),trials);bursts[axis]=abs(pulses)
                                 model['axis_bursts']=bursts
                                 model.update(signature=job['signature'],recorded_at=datetime.now().isoformat())
                                 if all(a in model['columns'] for a in ('X','Y','Z')):
@@ -3086,7 +3131,7 @@ class EngineeringLotusUI(LotusUI):
                                 key=(axis,1 if pulses>0 else -1)
                                 if axis=='Z':detail=f'Gap X {corrected[2]:+.2f}, Y {corrected[3]:+.2f} px'
                                 else:detail=f'Lateral X {corrected[0]:+.2f}, Y {corrected[1]:+.2f} px'
-                                result_labels[key].config(text=('−' if pulses<0 else '+')+': '+detail+'; saved')
+                                result_labels[key].config(text=('−' if pulses<0 else '+')+': '+detail+'; verified 2/2')
                                 finish((axis+' direction saved; measure the opposite direction at the SAME pulse count.' if axis not in model['columns'] else 'Recorded '+axis)+'. Columns: '+', '.join(model['columns'])+'\n'+detail+'; estimated noise (1σ): '+', '.join(f'{v:.2f}' for v in uncertainty)+' px.')
                                 return
                 self.after(100,tick)
@@ -3123,8 +3168,9 @@ class EngineeringLotusUI(LotusUI):
                 sample=self.auto_xy_model.get('axis_samples',{}).get(axis,{})
                 count=self.auto_xyz_axis_bursts.get(axis,0)
                 if sample.get('pulses')!=count:raise ValueError('Calibrate both directions of every axis at the same pulse count.')
-                verified=calibrated_axis_burst(axis,sample.get('directions',{}),count)
+                verified=calibrated_axis_burst(axis,sample.get('directions',{}),count,sample.get('trials',{}))
                 if not np.allclose(verified,columns[axis]):raise ValueError('Saved response differs from verified calibration.')
+            self.auto_xyz_direction_samples={axis:self.auto_xy_model['axis_samples'][axis]['directions'] for axis in ('X','Y','Z')}
             self.auto_xyz_z_burst=self.auto_xyz_axis_bursts['Z']
             self.auto_xy_matrix=np.asarray([columns[a] for a in ('X','Y','Z')],dtype=float).T
             if self.auto_xy_matrix.shape!=(4,3) or not np.isfinite(self.auto_xy_matrix).all() or np.linalg.cond(self.auto_xy_matrix)>30:
@@ -3138,7 +3184,7 @@ class EngineeringLotusUI(LotusUI):
             self.auto_xyz_scales_value=self.auto_xyz_scales()
             target=self.alignment_criteria.get('target_gap_um')
             tolerance=self.alignment_criteria['gap_tolerance_um']
-            auto_xyz_plan(self.auto_xy_matrix,obs,self.auto_xyz_scales_value,target,tolerance,self.alignment_criteria['offset_px'],self.auto_xyz_z_burst,self.auto_xyz_axis_bursts)
+            auto_xyz_plan(self.auto_xy_matrix,obs,self.auto_xyz_scales_value,target,tolerance,self.alignment_criteria['offset_px'],self.auto_xyz_z_burst,self.auto_xyz_axis_bursts,self.auto_xyz_direction_samples)
             self.auto_xy_active=True;self.auto_xy_pending=None
             self.auto_xy_state={'started':time.monotonic(),'pulse_budget':4000,'axis_bursts':dict(self.auto_xyz_axis_bursts),'z_burst':self.auto_xyz_z_burst,'pulses':0,'moves':0,'confirmed':0,'no_progress':0,
                                 'last_stamps':[0,0],'initial_gaps':obs['gaps'],'expected':obs['positions'],
@@ -3178,7 +3224,7 @@ class EngineeringLotusUI(LotusUI):
             if scales!=self.auto_xyz_scales_value:raise ValueError('Camera scale changed.')
             if run['last_axis']=='Z':
                 observed=np.asarray(obs['gaps'])-run['before_move_gaps']
-                predicted=self.auto_xy_matrix[2:,2]*run['last_pulses']
+                predicted=direction_response(self.auto_xy_model,'Z',run['last_pulses'])[2:]*run['last_pulses']
                 if np.any((np.abs(observed)>.5)&(observed*predicted<0)):
                     raise ValueError('Z moved opposite to calibrated gap direction.')
                 if np.any(np.abs(observed)>np.maximum(4,2*np.abs(predicted))):
@@ -3194,7 +3240,7 @@ class EngineeringLotusUI(LotusUI):
                         raise ValueError('Strict alignment: angular tilt unavailable or exceeds tolerance.')
             error=np.asarray(obs['offsets'])
             axis,pulses,norm=auto_xyz_plan(self.auto_xy_matrix,obs,scales,run['criteria']['target_gap_um'],
-                                         run['criteria']['gap_tolerance_um'],run['criteria']['offset_px'],run['z_burst'],run['axis_bursts'])
+                                         run['criteria']['gap_tolerance_um'],run['criteria']['offset_px'],run['z_burst'],run['axis_bursts'],self.auto_xyz_direction_samples)
             if axis is None:
                 run['confirmed']+=1
                 self.auto_xy_set_text(f'XYZ geometry within tolerance: checking {run["confirmed"]}/3 fresh frame pairs.')
@@ -3207,7 +3253,7 @@ class EngineeringLotusUI(LotusUI):
             if previous is not None:
                 if norm>previous+max(1,previous*.15):raise ValueError('Alignment error increased; check direction/calibration.')
                 change=np.asarray(obs['offsets']+obs['gaps'])-run['before_move_geometry']
-                predicted=self.auto_xy_matrix[:,('X','Y','Z').index(run['last_axis'])]*run['last_pulses']
+                predicted=direction_response(self.auto_xy_model,run['last_axis'],run['last_pulses'])*run['last_pulses']
                 effect=float(np.linalg.norm(predicted))
                 along=float(np.dot(change,predicted)/max(effect,1e-9))
                 run['no_progress']=run['no_progress']+1 if along<max(.05,min(.25,effect*.2)) else 0
