@@ -82,7 +82,7 @@
 #define AUX_PWM_HZ       1000
 #define PWM_BITS         LEDC_TIMER_10_BIT
 #define PWM_MAX          1023
-#define LED_MAX_PERCENT  50.0f   // GPIO17 light and GPIO18 UV ceiling
+#define CAMERA_LIGHT_MAX_PERCENT 50.0f  // GPIO17 only; UV is independent
 
 static SemaphoreHandle_t g_state_lock;
 static QueueHandle_t g_motor_queue;
@@ -111,7 +111,7 @@ static uint32_t g_fan_rpm = 0;
 static int g_fan_percent = 100; // fail-safe until first valid TMP75 reading
 static bool g_fan_auto = true;
 static float g_light_percent = 12.5f;
-static float g_uv_percent = 0.0f;
+static int g_uv_percent = 0;
 static bool g_uv_armed = false;
 static bool g_uv_active = false;
 static int64_t g_uv_end_us = 0;
@@ -225,10 +225,10 @@ static bool set_fan_percent(int percent) {
     return err == ESP_OK;
 }
 
-// Fractional 12.5% PWM duty (approx. 128/1023); never exceed 50%.
-static void pwm_set_limited_led_percent(ledc_channel_t channel, float percent) {
+// GPIO17 camera illumination: fractional PWM duty and a 50% ceiling.
+static void pwm_set_camera_light_percent(ledc_channel_t channel, float percent) {
     if (!isfinite(percent) || percent < 0.0f) percent = 0.0f;
-    if (percent > LED_MAX_PERCENT) percent = LED_MAX_PERCENT;
+    if (percent > CAMERA_LIGHT_MAX_PERCENT) percent = CAMERA_LIGHT_MAX_PERCENT;
     uint32_t duty = (uint32_t)lroundf((PWM_MAX * percent) / 100.0f);
     ESP_ERROR_CHECK_WITHOUT_ABORT(ledc_set_duty(PWM_MODE, channel, duty));
     ESP_ERROR_CHECK_WITHOUT_ABORT(ledc_update_duty(PWM_MODE, channel));
@@ -236,8 +236,8 @@ static void pwm_set_limited_led_percent(ledc_channel_t channel, float percent) {
 
 static void set_light_percent(float percent) {
     if (!isfinite(percent) || percent < 0.0f) percent = 0.0f;
-    if (percent > LED_MAX_PERCENT) percent = LED_MAX_PERCENT;
-    pwm_set_limited_led_percent(PWM_CH_LIGHT, percent);
+    if (percent > CAMERA_LIGHT_MAX_PERCENT) percent = CAMERA_LIGHT_MAX_PERCENT;
+    pwm_set_camera_light_percent(PWM_CH_LIGHT, percent);
     state_lock();
     g_light_percent = percent;
     state_unlock();
@@ -253,10 +253,10 @@ static void uv_off(void) {
     state_unlock();
 }
 
-static void uv_set_percent(float percent) {
-    if (!isfinite(percent) || percent < 0.0f) percent = 0.0f;
-    if (percent > LED_MAX_PERCENT) percent = LED_MAX_PERCENT;
-    pwm_set_limited_led_percent(PWM_CH_UV, percent);
+static void uv_set_percent(int percent) {
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    pwm_set_percent(PWM_CH_UV, percent);
     state_lock();
     g_uv_percent = percent;
     state_unlock();
@@ -497,8 +497,8 @@ static void motor_task(void *arg) {
 static void print_status(void) {
     float pcb, amb, hum, volts, current, power;
     uint32_t rpm;
-    int fan_pct;
-    float light_pct, uv_pct;
+    int fan_pct, uv_pct;
+    float light_pct;
     bool fan_auto, uv_active, moving, tmp_ok, sht_ok, ina_ok;
     int32_t xpos, ypos, zpos;
 
@@ -526,7 +526,7 @@ static void print_status(void) {
 
     printf("STATUS uvmax=300 pcb=%.2f ambient=%.2f humidity=%.1f voltage=%.3f current=%.1f power=%.2f "
            "tmpok=%d shtok=%d inaok=%d fanrpm=%lu fanpct=%d fanauto=%d light=%.1f "
-           "uv=%.1f uvactive=%d moving=%d xfault=%d yfault=%d zfault=%d "
+           "uv=%d uvactive=%d moving=%d xfault=%d yfault=%d zfault=%d "
            "xpos=%ld ypos=%ld zpos=%ld\n",
            pcb, amb, hum, volts, current, power,
            tmp_ok ? 1 : 0, sht_ok ? 1 : 0, ina_ok ? 1 : 0,
@@ -717,7 +717,7 @@ static void handle_command(char *line) {
     }
     float light_percent = 0.0f;
     if (sscanf(line, "LIGHT %f", &light_percent) == 1) {
-        if (!isfinite(light_percent) || light_percent < 0.0f || light_percent > LED_MAX_PERCENT) {
+        if (!isfinite(light_percent) || light_percent < 0.0f || light_percent > CAMERA_LIGHT_MAX_PERCENT) {
             printf("ERR LIGHT range_max_50\n");
             return;
         }
@@ -744,8 +744,7 @@ static void handle_command(char *line) {
     }
 
     int seconds = 0;
-    float uv_percent = 0.0f;
-    if (sscanf(line, "UV_CURE %d %f", &seconds, &uv_percent) == 2) {
+    if (sscanf(line, "UV_CURE %d %d", &seconds, &percent) == 2) {
         bool armed;
         state_lock();
         armed = g_uv_armed;
@@ -755,17 +754,17 @@ static void handle_command(char *line) {
             printf("ERR UV_CURE not_armed\n");
             return;
         }
-        if (seconds < 1 || seconds > 300 || !isfinite(uv_percent) || uv_percent <= 0.0f || uv_percent > LED_MAX_PERCENT) {
+        if (seconds < 1 || seconds > 300 || percent < 1 || percent > 100) {
             printf("ERR UV_CURE range\n");
             return;
         }
 
-        uv_set_percent(uv_percent);
+        uv_set_percent(percent);
         state_lock();
         g_uv_active = true;
         g_uv_end_us = esp_timer_get_time() + ((int64_t)seconds * 1000000LL);
         state_unlock();
-        printf("OK UV_CURE seconds=%d percent=%.1f\n", seconds, uv_percent);
+        printf("OK UV_CURE seconds=%d percent=%d\n", seconds, percent);
         return;
     }
 
