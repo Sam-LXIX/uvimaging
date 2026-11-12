@@ -2199,6 +2199,42 @@ def analyze_fibers(image, roi=None, options=None):
     return result
 
 
+def measure_cleave(profile, line):
+    """2D sampled edge geometry, relative to the fiber axis; not splice quality.
+
+    Fit axial position versus transverse position, retaining all sampled points
+    (including possible chips). Roughness is perpendicular distance to that fit.
+    """
+    import numpy as np
+    unavailable={'valid':False,'reason':'Insufficient resolved cleave edge'}
+    points=np.asarray(profile,dtype=float)
+    if points.ndim!=2 or points.shape[1]!=2 or len(points)<8 or not np.isfinite(points).all():
+        return unavailable
+    # The tracer can revisit the same raster row on thin fibers.
+    if len(np.unique(np.rint(points[:,1])))<8:return unavailable
+    m=float(line['m']);diameter=float(line['diameter_px'])
+    if not math.isfinite(m) or not math.isfinite(diameter) or diameter<=0:return unavailable
+    axis=np.array([1.,m])/math.sqrt(1+m*m)
+    normal=np.array([-axis[1],axis[0]])
+    center=points.mean(axis=0)
+    local=points-center
+    transverse=local@normal;axial=local@axis
+    span=float(np.ptp(transverse))
+    coverage=span/(diameter/math.sqrt(1+m*m))
+    if span<6 or coverage<.5:return unavailable
+    slope,intercept=np.polyfit(transverse,axial,1)
+    distances=(axial-(slope*transverse+intercept))/math.sqrt(1+slope*slope)
+    extent=np.array([transverse.min(),transverse.max()])
+    fitted=center+extent[:,None]*normal+(slope*extent+intercept)[:,None]*axis
+    ideal=center+extent[:,None]*normal
+    return {'valid':True,'angle_error_deg':float(math.degrees(math.atan(slope))),
+            'rms_px':float(np.sqrt(np.mean(distances**2))),
+            'max_deviation_px':float(np.max(np.abs(distances))),
+            'sample_count':int(len(points)),'span_px':span,'coverage_fraction':coverage,
+            'fitted_line':fitted.tolist(),'ideal_line':ideal.tolist(),
+            'note':'2D sampled central edge only; blur/threshold/pixel sampling affect results. Not a full-face inspection.'}
+
+
 def refine_cladding_tip(a, line, side, midpoint, origin):
     """Trace terminal dark material across the fitted cladding, including tapered tips.
 
@@ -2340,6 +2376,8 @@ def analyze_cladding(image, roi=None, polarity='Dark'):
     left['x1']=left_tip['x'];right['x0']=right_tip['x']
     gap=right['x0']-left['x1']
     result.update(tip_profiles=[left_tip,right_tip],full_width_gap_px=band_gap,
+                  cleaves={'left':measure_cleave(left_tip['profile'],left),
+                           'right':measure_cleave(right_tip['profile'],right)},
                   gap_definition='Axial separation of supported outward tip envelopes; not a 3D contact distance.')
     if gap<4:return fail('Fiber-end gap below 4-pixel detection limit.')
     if left['x1']-left['x0']<24 or right['x1']-right['x0']<24:return fail('Insufficient visible fiber length.')
@@ -2700,7 +2738,7 @@ class EngineeringLotusUI(LotusUI):
             tk.Label(box,text=name,bg=WHITE,fg=PURPLE,font=(FONT,11,'bold')).pack()
             canvas=tk.Canvas(box,bg=BLACK,width=1,height=120,highlightthickness=0)
             canvas.pack(fill='both',expand=True)
-            label=tk.Label(box,text='Waiting for image',bg=WHITE,fg=TEXT,justify='left',anchor='nw',height=6,width=1,wraplength=300,font=(FONT,9))
+            label=tk.Label(box,text='Waiting for image',bg=WHITE,fg=TEXT,justify='left',anchor='nw',height=11,width=1,wraplength=300,font=(FONT,8))
             label.pack(fill='x',padx=5,pady=4)
             label.bind('<Configure>',lambda event,widget=label:widget.config(wraplength=max(100,event.width-10)))
             row=tk.Frame(box,bg=WHITE);row.pack(fill='x')
@@ -2848,6 +2886,10 @@ class EngineeringLotusUI(LotusUI):
                 draw.line((end,m*end+c-d,end,m*end+c+d),fill='magenta',width=2)
             for tip in result.get('tip_profiles',[]):
                 for x,y in tip['profile']:draw.ellipse((x-1,y-1,x+1,y+1),fill='orange')
+            for cleave in result.get('cleaves',{}).values():
+                if cleave.get('valid'):
+                    draw.line([tuple(p) for p in cleave['ideal_line']],fill='dodgerblue',width=1)
+                    draw.line([tuple(p) for p in cleave['fitted_line']],fill='white',width=1)
         return image
 
     def refresh_alignment_metrics(self):
@@ -2913,6 +2955,13 @@ class EngineeringLotusUI(LotusUI):
                           f"Gap ≈ {result['gap_px']*s:.2f} {unit}\n"
                           f"Offset ≈ {result['offset_px']*s:+.2f} {unit} | Angle ≈ {result['angle_deg']:+.2f}°\n"
                           f"Gap sampling uncertainty ≳ {4*s:.2f} {unit}")
+                    for side in ('left','right'):
+                        cleave=result.get('cleaves',{}).get(side,{})
+                        if cleave.get('valid'):
+                            text+=(f"\n{side.title()} cleave: {cleave['angle_error_deg']:+.1f}° | "
+                                   f"RMS {cleave['rms_px']*s:.2f}, max {cleave['max_deviation_px']*s:.2f} {'µm' if cal else 'px'}")
+                        else:text+=f"\n{side.title()} cleave: unresolved"
+                    text+='\nSampled edge only • blue: ideal / white: fitted'
             else:text=f"{origin} | Measurement unavailable\n"+('Measurement expired; inspect capture age / processing time below.' if stale else result.get('reason',''))
             age=time.monotonic()-(result.get('source_stamp') or 0) if result.get('source')=='live' else None
             timing=f"Analysis {result.get('processing_ms',0):.0f} ms"
