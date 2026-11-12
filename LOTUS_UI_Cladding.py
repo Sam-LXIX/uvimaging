@@ -1900,18 +1900,18 @@ def drift_corrected_calibration(before,after):
 
 
 def validate_calibration_response(axis,change,uncertainty,raw):
-    """Validate the observable controlled by this axis; preserve absolute floors."""
+    """Relaxed acceptance: 2-sigma evidence with subpixel movement floors."""
     import numpy as np
     change=np.asarray(change,float);uncertainty=np.asarray(uncertainty,float);raw=np.asarray(raw,float)
     if change.shape!=(4,) or uncertainty.shape!=(4,) or not np.isfinite([change,uncertainty,raw]).all():
         raise ValueError('Invalid calibration measurements.')
     if axis=='Z':
-        required=np.maximum(2.,3*uncertainty[2:])
+        required=np.maximum(.75,2*uncertainty[2:])
         if change[2]*change[3]<=0 or np.any(np.abs(change[2:])<required):
             raise ValueError(f'Z gap change X {change[2]:+.2f}, Y {change[3]:+.2f} px; required X {required[0]:.2f}, Y {required[1]:.2f} px in the same direction. Raw X {raw[2]:+.2f}, Y {raw[3]:+.2f} px. Calibration not accepted; details saved in session export.')
     else:
         # Gap noise is unrelated to evidence of X/Y lateral movement.
-        movement=float(np.linalg.norm(change[:2]));required=max(.5,3*float(np.linalg.norm(uncertainty[:2])))
+        movement=float(np.linalg.norm(change[:2]));required=max(.25,2*float(np.linalg.norm(uncertainty[:2])))
         if movement<required:
             raise ValueError(f'{axis} lateral change {movement:.2f} px; required {required:.2f} px above measured noise. Components X {change[0]:+.2f}, Y {change[1]:+.2f}; raw X {raw[0]:+.2f}, Y {raw[1]:+.2f} px. Calibration not accepted; details saved in session export.')
 
@@ -1927,14 +1927,14 @@ def repeatable_direction(axis,trials,count):
     if rows.shape!=(2,4) or not np.isfinite(rows).all():raise ValueError('Invalid repeated motor measurements.')
     relevant=rows[:,2:] if axis=='Z' else rows[:,:2]
     if axis=='Z':
-        if np.any(np.abs(relevant)*count<2) or np.any(relevant[0]*relevant[1]<=0) or np.any(relevant[:,0]*relevant[:,1]<=0):
+        if np.any(np.abs(relevant)*count<.75) or np.any(relevant[0]*relevant[1]<=0) or np.any(relevant[:,0]*relevant[:,1]<=0):
             raise ValueError('Repeated Z moves must measurably change both gaps in the same direction.')
         ratio=np.maximum(abs(relevant[0]),abs(relevant[1]))/np.minimum(abs(relevant[0]),abs(relevant[1]))
-        if np.any(ratio>1.5):raise ValueError('Repeated Z moves differ by over 50%; retry after inspecting mechanical response.')
+        if np.any(ratio>3):raise ValueError('Repeated Z moves differ by over 3x; retry after inspecting mechanical response.')
     else:
         lengths=np.linalg.norm(relevant,axis=1)
-        if min(lengths)*count<.5 or max(lengths)>1.5*min(lengths):raise ValueError('Repeated lateral response is too small or varies by over 50%.')
-        if np.dot(relevant[0],relevant[1])/np.prod(lengths)<.9:raise ValueError('Repeated lateral moves changed image direction.')
+        if min(lengths)*count<.25 or max(lengths)>3*min(lengths):raise ValueError('Repeated lateral response is too small or varies by over 3x.')
+        if np.dot(relevant[0],relevant[1])/np.prod(lengths)<.7:raise ValueError('Repeated lateral moves changed image direction.')
     return rows.mean(axis=0).tolist()
 
 
@@ -1955,14 +1955,14 @@ def calibrated_axis_burst(axis,samples,count,trials=None):
             if not np.allclose(verified,expected):raise ValueError('Stored direction response differs from its repeat measurements.')
     if axis=='Z':
         if np.any(a[2:]*b[2:]<=0) or a[2]*a[3]<=0:raise ValueError('Opposite Z commands did not produce opposite gap changes.')
-        if min(np.abs(a[2:]).min(),np.abs(b[2:]).min())*count<2:raise ValueError('Z response below measurable gap resolution.')
+        if min(np.abs(a[2:]).min(),np.abs(b[2:]).min())*count<.75:raise ValueError('Z response below measurable gap resolution.')
         ratios=np.maximum(abs(a[2:]),abs(b[2:]))/np.minimum(abs(a[2:]),abs(b[2:]))
-        if trials is None and np.any(ratios>2):raise ValueError('Z responses differ by over 2x; repeat both directions before using separate gains.')
+        if trials is None and np.any(ratios>3):raise ValueError('Z responses differ by over 3x; repeat both directions before using separate gains.')
     else:
         # X/Y must produce repeatable LATERAL response, not only a changing gap.
         la=np.linalg.norm(a[:2]);lb=np.linalg.norm(b[:2])
-        if min(la,lb)*count<.5 or (trials is None and max(la,lb)>2*min(la,lb)):raise ValueError('Lateral motor response too small or inconsistent.')
-        if np.dot(a[:2],b[:2])/(la*lb)<.7:raise ValueError('Opposite lateral commands have inconsistent image directions.')
+        if min(la,lb)*count<.25 or (trials is None and max(la,lb)>3*min(la,lb)):raise ValueError('Lateral motor response too small or inconsistent.')
+        if np.dot(a[:2],b[:2])/(la*lb)<.5:raise ValueError('Opposite lateral commands have inconsistent image directions.')
     return ((a+b)/2).tolist()
 
 
@@ -2966,7 +2966,7 @@ class EngineeringLotusUI(LotusUI):
 
     def auto_xy_signature(self,observation):
         # Calibration is specific to view assignment, scale in pixels, ROI and detector tuning.
-        return json.loads(json.dumps({'xyz_schema':11,'camera_orientation':{'X VIEW':'native','Y VIEW':'mirror-horizontal'},'detector_revision':'cladding-tip-envelope-v4','camera_calibrations':self.calibrations,'holder_layout':HOLDER_LAYOUT,'cameras':self.camera_order,'sizes':observation['sizes'],
+        return json.loads(json.dumps({'xyz_schema':11,'response_acceptance':'relaxed-v1','camera_orientation':{'X VIEW':'native','Y VIEW':'mirror-horizontal'},'detector_revision':'cladding-tip-envelope-v4','camera_calibrations':self.calibrations,'holder_layout':HOLDER_LAYOUT,'cameras':self.camera_order,'sizes':observation['sizes'],
             'roi':self.rois,'vision':self.vision_options,'firmware':self.hw.snapshot().get('firmware')},sort_keys=True))
 
     def auto_xy_set_text(self,text):
@@ -2989,9 +2989,9 @@ class EngineeringLotusUI(LotusUI):
 
     def auto_xy_calibrate(self):
         self.auto_xy_stop('Stopped for calibration');self.end_jog()
-        top=tk.Toplevel(self);top.title('Automatic motor response calibration')
+        top=tk.Toplevel(self);top.title('Automatic motor response calibration — Relaxed')
         self.auto_xy_calibration_window=top
-        tk.Label(top,text='Each button measures two same-direction moves, with a fresh BEFORE/AFTER capture for each,\nthen captures AFTER frames. Each window uses 15 fresh frame pairs and filters isolated detection glitches.\nBoth windows are fitted together to separate drift from movement. Two successful moves verify each direction.\nX/Y may retry up to 3 extra same-direction bursts to take up slack; each is measured separately.\nZ never retries automatically. Do not jog other controls during a measurement.\nCoarse defaults: X 500, Y 500, Z 500 pulses. Measure BOTH directions with the same count.\nAll axes run at 1000 pulses/s, matching manual Coarse. Measure Z OPENING first, then reverse.\nBoth Z directions must be measurable and consistent. Keep both cameras LIVE and UV OFF.',justify='left').pack(padx=12,pady=10)
+        tk.Label(top,text='Relaxed acceptance: X/Y minimum 0.25 px, Z minimum 0.75 px per view; both require 2× measured uncertainty.\nRepeated moves may differ by up to 3×; both directions are still verified.\nEach button measures two same-direction moves, with a fresh BEFORE/AFTER capture for each,\nthen captures AFTER frames. Each window uses 15 fresh frame pairs and filters isolated detection glitches.\nBoth windows are fitted together to separate drift from movement. Two successful moves verify each direction.\nX/Y may retry up to 3 extra same-direction bursts to take up slack; each is measured separately.\nZ never retries automatically. Do not jog other controls during a measurement.\nCoarse defaults: X 500, Y 500, Z 500 pulses. Measure BOTH directions with the same count.\nAll axes run at 1000 pulses/s, matching manual Coarse. Measure Z OPENING first, then reverse.\nBoth Z directions must be measurable and consistent. Keep both cameras LIVE and UV OFF.',justify='left').pack(padx=12,pady=10)
         status=tk.Label(top,text='Choose an axis measurement.',justify='left',wraplength=720);status.pack(padx=12,pady=10)
         job={};controls=[];counts={};result_labels={}
         results=tk.Frame(top);results.pack(fill='x',padx=12,pady=4)
