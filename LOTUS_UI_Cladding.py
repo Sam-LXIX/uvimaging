@@ -533,7 +533,7 @@ def optical_loss_db(pin_mw, pout_mw):
         raise ValueError('Both optical powers must be finite numbers.')
     if pin_mw <= 0 or pout_mw <= 0:
         raise ValueError('Both optical powers must be greater than zero.')
-    # Equivalent to -10*log10(Pout / Pin), avoiding extreme ratio underflow.
+    # Loss = 10*log10(Pin / Pout); use log differences to avoid ratio overflow/underflow.
     return 10.0 * (math.log10(pin_mw) - math.log10(pout_mw))
 
 
@@ -1624,7 +1624,7 @@ class LotusUI(tk.Tk):
         outer.pack(fill='both', expand=True)
         tk.Label(panel, text='Optical Splice Loss', bg=WHITE, fg=PURPLE,
                  font=(FONT, 20, 'bold')).pack(pady=(12, 5))
-        tk.Label(panel, text='Loss (dB) = -10 log10(Pout / Pin)  •  Enter both optical powers in mW.',
+        tk.Label(panel, text='Loss (dB) = 10 log10(Pin / Pout)  •  Enter both optical powers in mW.',
                  bg=WHITE, fg=MUTED, font=(FONT, 10), wraplength=660).pack(pady=(0, 9))
 
         powers = tk.Frame(panel, bg=WHITE)
