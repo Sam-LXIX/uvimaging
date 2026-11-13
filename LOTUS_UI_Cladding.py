@@ -1090,42 +1090,57 @@ class LotusUI(tk.Tk):
     # ------------------------------------------------------------------
     def show_alignment(self):
         main = self.page_shell('alignment', 'Alignment')
-        top = tk.Frame(main, bg=BG)
-        top.pack(fill='both', expand=True)
-        controls=tk.Frame(top,bg=WHITE)
-        controls.pack(side='bottom',fill='x',pady=(5,0))
-        for axis,minus,plus in [('X','←','→'),('Y','↓','↑'),('Z','▼','▲')]:
+        layout=tk.Frame(main,bg=BG)
+        layout.pack(fill='both',expand=True)
+        layout.grid_columnconfigure(0,weight=1)
+        layout.grid_rowconfigure(0,weight=1)
+        cams=tk.Frame(layout,bg=BG)
+        cams.grid(row=0,column=0,sticky='nsew')
+        cams.grid_rowconfigure(0,weight=1)
+        cams.grid_columnconfigure((0,1),weight=1,uniform='alignment_cameras')
+        for col,name in enumerate(('X VIEW','Y VIEW')):
+            self.camera_box(cams,name).grid(row=0,column=col,sticky='nsew',padx=3)
+        controls=tk.Frame(layout,bg=WHITE)
+        controls.grid(row=1,column=0,sticky='ew',pady=3)
+        controls.grid_columnconfigure((0,1,2),weight=1,uniform='axis_controls')
+        for col,(axis,minus,plus) in enumerate([('X','←','→'),('Y','↓','↑'),('Z','▼','▲')]):
             row=tk.Frame(controls,bg=WHITE)
-            row.pack(side='left',expand=True,pady=3)
-            tk.Label(row,text=axis,bg=WHITE,fg=TEXT,font=(FONT,10,'bold')).pack(side='left',padx=5)
-            self.jog_button(row,minus,axis,-1,width=3,font_size=13).pack(side='left',padx=3)
-            self.jog_button(row,plus,axis,1,width=3,font_size=13).pack(side='left',padx=3)
-        self.button(controls,'Motor settings',self.alignment_motor_settings).pack(side='right',padx=5)
-        cams = tk.Frame(top, bg=BG)
-        cams.pack(fill='both', expand=True)
-        self.camera_box(cams, 'X VIEW').pack(side='left', fill='both', expand=True, padx=(0, 4))
-        self.camera_box(cams, 'Y VIEW').pack(side='left', fill='both', expand=True, padx=(4, 0))
-
-        metrics = tk.Frame(main, bg=BG, height=50)
-        metrics.pack(fill='x', pady=(8, 0))
-        metrics.pack_propagate(False)
+            row.grid(row=0,column=col,sticky='ew',padx=3)
+            row.grid_columnconfigure((1,2),weight=1)
+            tk.Label(row,text=axis,bg=WHITE,fg=TEXT,font=(FONT,10,'bold')).grid(row=0,column=0,padx=4)
+            self.jog_button(row,minus,axis,-1,width=2,font_size=13).grid(row=0,column=1,sticky='ew',padx=3,pady=2)
+            self.jog_button(row,plus,axis,1,width=2,font_size=13).grid(row=0,column=2,sticky='ew',padx=3,pady=2)
+        metrics=tk.Frame(layout,bg=WHITE)
+        metrics.grid(row=2,column=0,sticky='ew',pady=2)
+        metrics.grid_columnconfigure((0,1),weight=1,uniform='measurement_views')
         self.alignment_metrics={}
-        for name in ('X VIEW','Y VIEW'):
-            for label,key in [('Gap','gap_px'),('Offset','offset_px'),('Tilt','angle_deg')]:
-                self.alignment_metrics[(name,key)]=self.metric(metrics,label+' / '+name[0],'—')
+        for col,name in enumerate(('X VIEW','Y VIEW')):
+            strip=tk.Frame(metrics,bg=WHITE)
+            strip.grid(row=0,column=col,sticky='ew',padx=3)
+            strip.grid_columnconfigure((0,1,2),weight=1,uniform='readings')
+            for n,(label,key) in enumerate([('Gap','gap_px'),('Offset','offset_px'),('Tilt','angle_deg')]):
+                cell=tk.Frame(strip,bg=WHITE)
+                cell.grid(row=0,column=n,sticky='ew')
+                tk.Label(cell,text=label,bg=WHITE,fg=MUTED,font=(FONT,8)).pack(side='left',padx=3)
+                reading=tk.Label(cell,text='—',bg=WHITE,fg=PURPLE,font=(FONT,9,'bold'))
+                reading.pack(side='left')
+                self.alignment_metrics[(name,key)]=reading
         self.alignment_page_active=True
-        self.alignment_live_status=tk.Label(main,text='Waiting for live measurements',bg=BG,fg=PURPLE,
-                                             font=(FONT,9),anchor='w',wraplength=720)
-        self.alignment_live_status.pack(fill='x')
+        self.alignment_live_status=tk.Label(layout,text='Waiting for live measurements',bg=BG,fg=PURPLE,
+                                             font=(FONT,8),anchor='w',height=1)
+        self.alignment_live_status.grid(row=3,column=0,sticky='ew',pady=2)
         self.camera_images.clear()
         self.analysis_samples.clear()
         self.invalidate_analysis()
-
-        actions = tk.Frame(main, bg=BG)
-        actions.pack(fill='x', pady=(8, 0))
-        self.button(actions, 'STOP', self.emergency_stop).pack(side='left')
-        self.button(actions, 'Auto XYZ', self.auto_align_unavailable, primary=True).pack(side='left', padx=8)
-        self.button(actions, 'Apply Epoxy →', self.show_epoxy, green=True).pack(side='right')
+        actions=tk.Frame(layout,bg=BG)
+        actions.grid(row=4,column=0,sticky='ew',pady=2)
+        actions.grid_columnconfigure((0,1,2,3),weight=1,uniform='alignment_actions')
+        for col,(text,callback,primary,green) in enumerate([
+                ('STOP',self.emergency_stop,False,False),
+                ('Auto XYZ',self.auto_align_unavailable,True,False),
+                ('Motor settings',self.alignment_motor_settings,False,False),
+                ('Apply Epoxy →',self.show_epoxy,False,True)]):
+            self.button(actions,text,callback,primary=primary,green=green).grid(row=0,column=col,sticky='ew',padx=3)
 
     def alignment_motor_settings(self):
         self.end_jog()
