@@ -656,7 +656,7 @@ class LotusUI(tk.Tk):
         tk.Button(right, text='⚙  Settings', command=self.show_settings,
                   bg=WHITE, fg=TEXT, relief='solid', bd=1,
                   activebackground=PLIGHT, activeforeground=TEXT,
-                  font=(FONT, 9, 'bold'), padx=12, pady=8).pack(side='right', padx=8)
+                  font=(FONT, 11, 'bold'), padx=20, pady=12).pack(side='right', padx=8)
         self.temp_label = tk.Label(right, text='PCB TEMP  — °C',
                                    font=(FONT, 9, 'bold'), fg=PURPLE, bg=PLIGHT,
                                    padx=12, pady=10)
@@ -1065,52 +1065,24 @@ class LotusUI(tk.Tk):
     # Alignment / motors
     # ------------------------------------------------------------------
     def show_alignment(self):
-        main = self.page_shell('alignment', 'Alignment',
-                               'Left holder: X motor | Right holder: Y and Z motors')
+        main = self.page_shell('alignment', 'Alignment')
         top = tk.Frame(main, bg=BG)
         top.pack(fill='both', expand=True)
+        controls=tk.Frame(top,bg=WHITE)
+        controls.pack(side='bottom',fill='x',pady=(5,0))
+        for axis,minus,plus in [('X','←','→'),('Y','↓','↑'),('Z','▼','▲')]:
+            row=tk.Frame(controls,bg=WHITE)
+            row.pack(side='left',expand=True,pady=3)
+            tk.Label(row,text=axis,bg=WHITE,fg=TEXT,font=(FONT,10,'bold')).pack(side='left',padx=5)
+            self.jog_button(row,minus,axis,-1,width=3,font_size=13).pack(side='left',padx=3)
+            self.jog_button(row,plus,axis,1,width=3,font_size=13).pack(side='left',padx=3)
+        self.button(controls,'Motor settings',self.alignment_motor_settings).pack(side='right',padx=5)
         cams = tk.Frame(top, bg=BG)
-        cams.pack(side='left', fill='both', expand=True)
+        cams.pack(fill='both', expand=True)
         self.camera_box(cams, 'X VIEW').pack(side='left', fill='both', expand=True, padx=(0, 4))
         self.camera_box(cams, 'Y VIEW').pack(side='left', fill='both', expand=True, padx=(4, 0))
 
-        outer, controls = self.bordered(top)
-        outer.pack(side='right', fill='y', padx=(8, 0))
-        outer.configure(width=205)
-        outer.pack_propagate(False)
-        tk.Label(controls, text='AXIS CONTROL', font=(FONT, 10, 'bold'),
-                 fg=TEXT, bg=WHITE).pack(anchor='w', padx=10, pady=(10, 7))
-
-        for axis, label, minus, plus in [
-            ('X', 'Left / X', '←', '→'),
-            ('Y', 'Right / Y', '↓', '↑'),
-            ('Z', 'Right / Z', '▼', '▲'),
-        ]:
-            row = tk.Frame(controls, bg=WHITE)
-            row.pack(fill='x', padx=9, pady=4)
-            tk.Label(row, text=label, width=10, anchor='w', font=(FONT, 8),
-                     fg=MUTED, bg=WHITE).pack(side='left')
-            self.jog_button(row, minus, axis, -1, width=3, font_size=11).pack(
-                side='left', padx=2)
-            self.jog_button(row, plus, axis, +1, width=3, font_size=11).pack(
-                side='left', padx=2)
-
-        tk.Label(controls, text='STEP SIZE', font=(FONT, 8, 'bold'), fg=MUTED,
-                 bg=WHITE).pack(anchor='w', padx=10, pady=(9, 4))
-        steps = tk.Frame(controls, bg=WHITE)
-        steps.pack(fill='x', padx=9)
-        for name in ('Coarse', 'Medium', 'Fine'):
-            tk.Button(steps, text=name,
-                      bg=PLIGHT if name == self.preferences['Default step'] else BG,
-                      fg=PURPLE if name == self.preferences['Default step'] else TEXT,
-                      relief='flat', font=(FONT, 7, 'bold'), padx=5, pady=5,
-                      command=lambda n=name: self.save_preference('Default step', n)).pack(
-                          side='left', expand=True, fill='x', padx=1)
-
-        self.button(controls, 'Zero Current Position', self.zero_positions).pack(fill='x', padx=9, pady=(10, 3))
-        self.button(controls, 'Disable Motors', self.disable_motors).pack(fill='x', padx=9, pady=3)
-
-        metrics = tk.Frame(main, bg=BG, height=80)
+        metrics = tk.Frame(main, bg=BG, height=50)
         metrics.pack(fill='x', pady=(8, 0))
         metrics.pack_propagate(False)
         self.alignment_metrics={}
@@ -1130,6 +1102,20 @@ class LotusUI(tk.Tk):
         self.button(actions, 'STOP', self.emergency_stop).pack(side='left')
         self.button(actions, 'Auto XYZ', self.auto_align_unavailable, primary=True).pack(side='left', padx=8)
         self.button(actions, 'Apply Epoxy →', self.show_epoxy, green=True).pack(side='right')
+
+    def alignment_motor_settings(self):
+        self.end_jog()
+        self.auto_xy_stop('Auto XYZ paused for motor settings')
+        top=tk.Toplevel(self)
+        top.title('Motor settings')
+        top.transient(self)
+        top.configure(bg=BG)
+        tk.Label(top,text='Step size',bg=BG,font=(FONT,12,'bold')).pack(pady=10)
+        for name in ('Coarse','Medium','Fine'):
+            self.button(top,name,lambda n=name:self.save_preference('Default step',n)).pack(fill='x',padx=15,pady=5)
+        self.button(top,'Zero Current Position',self.zero_positions).pack(fill='x',padx=15,pady=5)
+        self.button(top,'Disable Motors',self.disable_motors).pack(fill='x',padx=15,pady=5)
+        self.button(top,'Close',top.destroy).pack(fill='x',padx=15,pady=10)
 
     def show_manual(self):
         main = self.page_shell('manual', 'Manual Control',
@@ -1371,7 +1357,8 @@ class LotusUI(tk.Tk):
             menu = tk.OptionMenu(panel, variable, *options,
                                  command=lambda value, key=name: self.save_preference(key, value))
             menu.config(bg=PLIGHT, fg=PURPLE, highlightthickness=0,
-                        width=13, font=(FONT, 9))
+                        width=18, font=(FONT, 11), padx=12, pady=10)
+            menu['menu'].config(font=(FONT, 12), activebackground=PLIGHT)
             menu.pack(side='right', padx=18)
         tk.Label(main, text='Battery: rough TalentCell PB120B1 voltage estimate. Select External / charging when plugged in.\nLoad and temperature affect the estimate; remaining runtime is not measured.',
                  bg=BG, fg=MUTED, font=(FONT, 8), justify='left', wraplength=650).pack(anchor='w')
@@ -2777,7 +2764,7 @@ class EngineeringLotusUI(LotusUI):
         self.after(100,self.engineering_tick)
 
     def show_engineering(self):
-        main=self.page_shell('engineering',COMPARISON_TITLE,'Compare the same captures and ROI; measurements are geometric estimates')
+        main=self.page_shell('engineering','Engineering')
         notebook=ttk.Notebook(main)
         notebook.pack(fill='both',expand=True)
         vision=tk.Frame(notebook,bg=BG)
@@ -2786,18 +2773,17 @@ class EngineeringLotusUI(LotusUI):
         notebook.add(vision,text='Vision & Calibration')
         notebook.add(tools,text='Motor Calibration & Reports')
         notebook.add(telemetry,text='Telemetry')
-        status_row=tk.Frame(vision,bg=BG);status_row.pack(fill='x',padx=4,pady=3)
+        status_row=tk.Frame(vision,bg=BG);status_row.pack(fill='x',padx=4,pady=2)
         self.alignment_status_label=tk.Label(status_row,text='Measurement unavailable',bg=BG,fg=PURPLE,
-                                             font=(FONT,10,'bold'),justify='left',anchor='w',wraplength=600)
-        self.alignment_status_label.pack(side='left',fill='x',expand=True)
-        tk.Button(status_row,text='Alignment criteria',command=self.edit_alignment_criteria,bg=PLIGHT,fg=PURPLE,relief='flat').pack(side='right')
-        auto_row=tk.Frame(vision,bg=BG);auto_row.pack(fill='x',padx=4,pady=3)
+                                             font=(FONT,9,'bold'),anchor='w',wraplength=650)
+        self.alignment_status_label.pack(fill='x')
+        auto_row=tk.Frame(vision,bg=BG);auto_row.pack(side='bottom',fill='x',padx=4,pady=3)
         for text,callback in [('Calibrate XYZ',self.auto_xy_calibrate),('Start auto XYZ',self.auto_xy_start),
                               ('STOP auto',lambda:self.auto_xy_stop('Stopped by operator'))]:
-            tk.Button(auto_row,text=text,command=callback,bg=PLIGHT,fg=PURPLE,relief='flat').pack(side='left',padx=3)
-        self.auto_xy_label=tk.Label(vision,text=self.auto_xy_message,bg=BG,fg=TEXT,justify='left',anchor='w',wraplength=780,font=(FONT,9))
-        self.auto_xy_label.pack(fill='x',padx=6)
-        self.button(vision,'Load synthetic demo (50 px gap, 8 px offset)',self.load_demo).pack(anchor='w',padx=4,pady=3)
+            self.button(auto_row,text,callback).pack(side='left',padx=3)
+        self.auto_xy_label=tk.Label(vision,text=self.auto_xy_message,bg=BG,fg=TEXT,anchor='w',
+                                    wraplength=780,font=(FONT,8),height=2)
+        self.auto_xy_label.pack(side='bottom',fill='x',padx=6)
         panels=tk.Frame(vision,bg=BG)
         panels.pack(fill='both',expand=True)
         panels.grid_rowconfigure(0,weight=1)
@@ -2806,25 +2792,15 @@ class EngineeringLotusUI(LotusUI):
             box=tk.Frame(panels,bg=WHITE,width=320,height=240)
             box.grid(row=0,column=column,sticky='nsew',padx=4,pady=4)
             box.pack_propagate(False)
-            tk.Label(box,text=name,bg=WHITE,fg=PURPLE,font=(FONT,11,'bold')).pack()
-            canvas=tk.Canvas(box,bg=BLACK,width=1,height=120,highlightthickness=0)
-            canvas.pack(fill='both',expand=True)
-            label=tk.Label(box,text='Waiting for image',bg=WHITE,fg=TEXT,justify='left',anchor='nw',height=11,width=1,wraplength=300,font=(FONT,8))
-            label.pack(fill='x',padx=5,pady=4)
+            head=tk.Frame(box,bg=WHITE);head.pack(fill='x')
+            tk.Label(head,text=name,bg=WHITE,fg=PURPLE,font=(FONT,11,'bold')).pack(side='left',padx=6)
+            self.button(head,'View settings',lambda n=name:self.camera_settings_dialog(n)).pack(side='right',padx=3,pady=2)
+            label=tk.Label(box,text='Waiting for image',bg=WHITE,fg=TEXT,justify='left',anchor='nw',height=3,width=1,wraplength=300,font=(FONT,8))
+            label.pack(side='bottom',fill='x',padx=5,pady=3)
             label.bind('<Configure>',lambda event,widget=label:widget.config(wraplength=max(100,event.width-10)))
-            row=tk.Frame(box,bg=WHITE);row.pack(fill='x')
-            for text,callback in [('Load',lambda n=name:self.load_analysis(n)),
-                                  ('Live',lambda n=name:self.analysis_live(n)),
-                                  ('Calibrate',lambda n=name:self.pick_points(n,'scale')),
-                                  ('ROI',lambda n=name:self.pick_points(n,'roi')),
-                                  ('Reset scale',lambda n=name:self.reset_scale(n))]:
-                tk.Button(row,text=text,command=callback,bg=PLIGHT,fg=PURPLE,relief='flat').pack(side='left',padx=2,pady=4)
-            tune_row=tk.Frame(box,bg=WHITE);tune_row.pack(fill='x')
-            tk.Button(tune_row,text='Tune detector',command=lambda n=name:self.tune_detector(n),bg=PLIGHT,fg=PURPLE,relief='flat').pack(side='left',padx=2)
-            tk.Button(tune_row,text='Mask / overlay',command=lambda n=name:self.toggle_mask(n),bg=PLIGHT,fg=PURPLE,relief='flat').pack(side='left',padx=2)
+            canvas=tk.Canvas(box,bg=BLACK,width=1,height=1,highlightthickness=0)
+            canvas.pack(fill='both',expand=True)
             self.engineering_widgets[name]=(canvas,label)
-        tk.Label(vision,text='Detector: '+COMPARISON_METHOD+'. Use Tune detector for settings. White mask = fiber; calibrate for µm.',
-                 bg=BG,fg=MUTED,font=(FONT,9)).pack(fill='x',pady=4)
         tk.Label(tools,text='Motor calibration',bg=BG,fg=PURPLE,font=(FONT,13,'bold')).pack(anchor='w',pady=8)
         tk.Label(tools,text='Use Manual Control to command a known pulse count. Measure displacement in a calibrated view.\n'
                  'Record signed displacement and actual pulse count below. No motion is issued by this tool.\n'
@@ -3038,7 +3014,35 @@ class EngineeringLotusUI(LotusUI):
             timing=f"Analysis {result.get('processing_ms',0):.0f} ms"
             if age is not None:timing+=f" | frame age {age:.2f} s"
             text=status['views'][name]+' | '+text+'\n'+timing
-            label.config(text=text)
+            label.full_measurement_text=text
+            label.config(text='\n'.join(text.splitlines()[:3]))
+
+    def camera_settings_dialog(self, name):
+        self.auto_xy_stop('Auto XYZ paused for view settings')
+        self.end_jog()
+        top=tk.Toplevel(self)
+        top.title(name+' settings')
+        top.configure(bg=BG)
+        top.transient(self)
+        for i,(text,callback) in enumerate([
+                ('Live / Retry',lambda:self.analysis_live(name)),
+                ('Load image',lambda:self.load_analysis(name)),
+                ('Set scale',lambda:self.pick_points(name,'scale')),
+                ('Set ROI',lambda:self.pick_points(name,'roi')),
+                ('Reset scale',lambda:self.reset_scale(name)),
+                ('Tune detector',lambda:self.tune_detector(name)),
+                ('Mask / overlay',lambda:self.toggle_mask(name)),
+                ('Alignment criteria',self.edit_alignment_criteria),
+                ('Load demo',self.load_demo)]):
+            def run(action=callback):
+                top.destroy()
+                action()
+            self.button(top,text,run).grid(row=i//3,column=i%3,sticky='ew',padx=6,pady=6)
+        widgets=self.engineering_widgets.get(name)
+        detail=getattr(widgets[1],'full_measurement_text','Waiting for measurement') if widgets else ''
+        tk.Label(top,text=detail,bg=BG,fg=TEXT,justify='left',wraplength=560,
+                 font=(FONT,10)).grid(row=3,column=0,columnspan=3,sticky='w',padx=12,pady=8)
+        self.button(top,'Close',top.destroy).grid(row=4,column=0,columnspan=3,pady=8)
 
     def edit_alignment_criteria(self):
         self.auto_xy_stop('Auto XYZ paused for operator input')
