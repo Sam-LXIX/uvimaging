@@ -537,6 +537,12 @@ def optical_loss_db(pf1_mw, pf2_mw):
     return 10.0 * (math.log10(pf1_mw) - math.log10(pf2_mw))
 
 
+def optical_transmission_percent(pf1_mw, pf2_mw):
+    """Transmission for passive-loss readings; divide before multiplying."""
+    loss = optical_loss_db(pf1_mw, pf2_mw)
+    if loss < 0:
+        return None  # UI reports apparent gain instead of an unbounded ratio.
+    return (float(pf2_mw) / float(pf1_mw)) * 100.0
 
 
 class LotusUI(tk.Tk):
@@ -1665,7 +1671,7 @@ class LotusUI(tk.Tk):
             if loss < 0:
                 detail_text.set('pf2 exceeds pf1: apparent gain. Check the measurement setup.')
             else:
-                detail_text.set(f'Transmitted power: {100.0 * pf2 / pf1:.2f}% of input.')
+                detail_text.set(f'Transmitted power: {optical_transmission_percent(pf1, pf2):.2f}% of input.')
 
         pf1_text.trace_add('write', update_loss)
         pf2_text.trace_add('write', update_loss)
@@ -3586,4 +3592,5 @@ class EngineeringLotusUI(LotusUI):
 
 if __name__ == '__main__':
     EngineeringLotusUI().mainloop()
+
 

@@ -26,7 +26,7 @@
 // ESP-IDF 5.4.x. No Arduino framework required.
 // -----------------------------------------------------------------------------
 
-#define FW_VERSION "1.2.4-s3-8mb"
+#define FW_VERSION "1.2.5-s3-8mb"
 
 // Motor control
 #define PIN_X_STEP       4
@@ -110,7 +110,7 @@ static bool g_ina260_ok = false;
 static uint32_t g_fan_rpm = 0;
 static int g_fan_percent = 100; // fail-safe until first valid TMP75 reading
 static bool g_fan_auto = true;
-static float g_light_percent = 12.5f;
+static float g_light_percent = 0.0f; // Updated only after successful PWM writes.
 static int g_uv_percent = 0;
 static bool g_uv_armed = false;
 static bool g_uv_active = false;
@@ -226,21 +226,23 @@ static bool set_fan_percent(int percent) {
 }
 
 // GPIO17 camera illumination: fractional PWM duty and a 50% ceiling.
-static void pwm_set_camera_light_percent(ledc_channel_t channel, float percent) {
+static bool pwm_set_camera_light_percent(ledc_channel_t channel, float percent) {
     if (!isfinite(percent) || percent < 0.0f) percent = 0.0f;
     if (percent > CAMERA_LIGHT_MAX_PERCENT) percent = CAMERA_LIGHT_MAX_PERCENT;
     uint32_t duty = (uint32_t)lroundf((PWM_MAX * percent) / 100.0f);
-    ESP_ERROR_CHECK_WITHOUT_ABORT(ledc_set_duty(PWM_MODE, channel, duty));
-    ESP_ERROR_CHECK_WITHOUT_ABORT(ledc_update_duty(PWM_MODE, channel));
+    esp_err_t err = ledc_set_duty(PWM_MODE, channel, duty);
+    if (err == ESP_OK) err = ledc_update_duty(PWM_MODE, channel);
+    return err == ESP_OK;
 }
 
-static void set_light_percent(float percent) {
+static bool set_light_percent(float percent) {
     if (!isfinite(percent) || percent < 0.0f) percent = 0.0f;
     if (percent > CAMERA_LIGHT_MAX_PERCENT) percent = CAMERA_LIGHT_MAX_PERCENT;
-    pwm_set_camera_light_percent(PWM_CH_LIGHT, percent);
+    if (!pwm_set_camera_light_percent(PWM_CH_LIGHT, percent)) return false;
     state_lock();
     g_light_percent = percent;
     state_unlock();
+    return true;
 }
 
 static void uv_off(void) {
@@ -716,12 +718,20 @@ static void handle_command(char *line) {
         return;
     }
     float light_percent = 0.0f;
-    if (sscanf(line, "LIGHT %f", &light_percent) == 1) {
+    char light_extra;
+    if (strncmp(line, "LIGHT ", 6) == 0) {
+        if (sscanf(line, "LIGHT %f %c", &light_percent, &light_extra) != 1) {
+            printf("ERR LIGHT syntax\n");
+            return;
+        }
         if (!isfinite(light_percent) || light_percent < 0.0f || light_percent > CAMERA_LIGHT_MAX_PERCENT) {
             printf("ERR LIGHT range_max_50\n");
             return;
         }
-        set_light_percent(light_percent);
+        if (!set_light_percent(light_percent)) {
+            printf("ERR LIGHT pwm_failed\n");
+            return;
+        }
         printf("OK LIGHT percent=%.1f\n", light_percent);
         return;
     }
@@ -879,7 +889,7 @@ static void init_pwm(void) {
 
     // Safe startup: motors disabled, UV off, fan full until TMP75 is read.
     set_fan_percent(100);
-    set_light_percent(12.5f);
+    if (!set_light_percent(12.5f)) printf("ERR LIGHT pwm_failed\n");
     uv_off();
 }
 
@@ -954,3 +964,4 @@ void app_main(void) {
         }
     }
 }
+

@@ -32,4 +32,5 @@ for address, filename in sorted(files.items(), key=lambda item: int(item[0], 16)
 print('Keep LOTUS UI closed. Flashing via ROM bootloader; no erase-all command.', flush=True)
 subprocess.run(command, check=True)
 print('Flash command completed. Release BOOT, then press RESET/EN once to start LOTUS.')
-print('Expected firmware version: 1.2.4-s3-8mb. Verify PONG and STATUS before motor/UV use.')
+print('Expected firmware version: 1.2.5-s3-8mb. Verify PONG and STATUS before motor/UV use.')
+
