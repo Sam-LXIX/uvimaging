@@ -638,6 +638,11 @@ class LotusUI(tk.Tk):
         bar.pack(fill='x')
         bar.pack_propagate(False)
 
+        self.sidebar_visible = True
+        self.menu_button = tk.Button(bar, text='Hide menu', command=self.toggle_sidebar,
+                                     bg=PLIGHT, fg=PURPLE, relief='flat',
+                                     font=(FONT, 11, 'bold'), padx=14, pady=12)
+        self.menu_button.pack(side='left', padx=(8, 0))
         brand = tk.Frame(bar, bg=WHITE)
         brand.pack(side='left', padx=20, pady=9)
         from PIL import Image, ImageTk
@@ -742,6 +747,7 @@ class LotusUI(tk.Tk):
         nav = tk.Frame(parent, bg=WHITE, width=170)
         nav.pack(side='left', fill='y', padx=(14, 10), pady=12)
         nav.pack_propagate(False)
+        self.sidebar_frame = nav
         items = [
             ('⌂  Home', self.show_home, 'home'),
             ('◉  Live View', self.show_live, 'live'),
@@ -767,8 +773,26 @@ class LotusUI(tk.Tk):
         self.sidebar(body, active)
         main = tk.Frame(body, bg=BG)
         main.pack(side='left', fill='both', expand=True, padx=(0, 14), pady=12)
+        self.page_main = main
+        self.apply_sidebar_visibility()
         self.page_heading(main, heading, subtitle)
         return main
+
+    def toggle_sidebar(self):
+        self.sidebar_visible = not self.sidebar_visible
+        self.apply_sidebar_visibility()
+
+    def apply_sidebar_visibility(self):
+        nav = getattr(self, 'sidebar_frame', None)
+        main = getattr(self, 'page_main', None)
+        if nav is None or main is None or not nav.winfo_exists() or not main.winfo_exists():
+            return
+        if self.sidebar_visible:
+            nav.pack(side='left', fill='y', padx=(14, 10), pady=12, before=main)
+        else:
+            nav.pack_forget()
+        main.pack_configure(padx=(0 if self.sidebar_visible else 14, 14))
+        self.menu_button.config(text='Hide menu' if self.sidebar_visible else 'Menu')
 
     @staticmethod
     def bordered(parent, bg=WHITE, border=BORDER):
@@ -2534,6 +2558,7 @@ class EngineeringLotusUI(LotusUI):
         nav=tk.Frame(parent,bg=WHITE,width=170)
         nav.pack(side='left',fill='y',padx=(14,10),pady=12)
         nav.pack_propagate(False)
+        self.sidebar_frame = nav
         items=[('Home',self.show_home,'home'),('Live View',self.show_live,'live'),
                ('Alignment',self.show_alignment,'alignment'),
                ('Engineering',self.show_engineering,'engineering'),
