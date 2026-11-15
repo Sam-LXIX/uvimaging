@@ -1387,18 +1387,18 @@ class LotusUI(tk.Tk):
     def show_settings(self):
         main = self.page_shell('settings', 'Settings',
                                'Operator preferences and connected hardware controls')
+        self.settings_variables = {}
         for name, options in self.setting_choices().items():
             outer, panel = self.bordered(main)
             outer.pack(fill='both', expand=True, pady=4)
             tk.Label(panel, text=name, bg=WHITE, fg=TEXT,
                      font=(FONT, 10, 'bold')).pack(side='left', padx=18)
             variable = tk.StringVar(self, value=self.preferences[name])
-            menu = tk.OptionMenu(panel, variable, *options,
-                                 command=lambda value, key=name: self.save_preference(key, value))
-            menu.config(bg=PLIGHT, fg=PURPLE, highlightthickness=0,
-                        width=18, font=(FONT, 11), padx=12, pady=10)
-            menu['menu'].config(font=(FONT, 12), activebackground=PLIGHT)
-            menu.pack(side='right', padx=18)
+            self.settings_variables[name] = variable
+            tk.Button(panel, textvariable=variable,
+                      command=lambda key=name:self.open_setting_choices(key),
+                      bg=PLIGHT, fg=PURPLE, activebackground=WHITE, relief='flat',
+                      width=18, font=(FONT,11,'bold'), padx=12, pady=10).pack(side='right',padx=18)
         tk.Label(main, text='Battery: rough TalentCell PB120B1 voltage estimate. Select External / charging when plugged in.\nLoad and temperature affect the estimate; remaining runtime is not measured.',
                  bg=BG, fg=MUTED, font=(FONT, 8), justify='left', wraplength=650).pack(anchor='w')
         row = tk.Frame(main, bg=BG)
@@ -1407,6 +1407,36 @@ class LotusUI(tk.Tk):
         self.button(row, 'Apply Hardware Settings', self.apply_all_hardware_preferences,
                     primary=True).pack(side='left', padx=6)
         self.button(row, 'Ping ESP32', lambda: self.send_hw('PING')).pack(side='left')
+
+    def sync_settings_values(self):
+        for key, variable in getattr(self, 'settings_variables', {}).items():
+            variable.set(self.preferences[key])
+
+    def open_setting_choices(self, key):
+        previous = getattr(self, 'settings_choice_window', None)
+        if previous is not None and previous.winfo_exists():
+            previous.destroy()
+        top = tk.Toplevel(self)
+        self.settings_choice_window = top
+        top.title(key)
+        top.transient(self)
+        top.configure(bg=BG)
+        tk.Label(top,text=key,bg=BG,fg=TEXT,font=(FONT,14,'bold')).grid(
+            row=0,column=0,columnspan=2,padx=16,pady=12)
+        options = self.setting_choices()[key]
+        for i,value in enumerate(options):
+            def select(choice=value):
+                if key == 'Fan speed' and getattr(self,'fan_request_inflight',False):
+                    messagebox.showinfo('Fan setting','Wait for the current fan command to finish.',parent=top)
+                    return
+                top.destroy()
+                self.save_preference(key,choice)
+                self.sync_settings_values()
+            self.button(top,value,select,primary=value==self.preferences[key]).grid(
+                row=1+i//2,column=i%2,sticky='ew',padx=8,pady=6)
+        top.grid_columnconfigure((0,1),weight=1)
+        self.button(top,'Cancel',top.destroy).grid(
+            row=1+(len(options)+1)//2,column=0,columnspan=2,sticky='ew',padx=8,pady=10)
 
     def save_preference(self, key, value):
         if key == 'Power source' and hasattr(self, '_battery_estimate'):
@@ -2684,6 +2714,7 @@ class EngineeringLotusUI(LotusUI):
                 (self.data_dir/'settings.json').write_text(json.dumps(self.preferences,indent=2))
             except OSError as exc:self.fan_reply_text+=' | Could not save preference: '+str(exc)
             self.hw.send('STATUS')
+        self.sync_settings_values()
         self.log_hardware_event(('RX ' if ok else 'FAN ERROR ')+response)
         if hasattr(self,'fan_reply_label') and self.fan_reply_label.winfo_exists():
             self.fan_reply_label.config(text=self.fan_reply_text)
