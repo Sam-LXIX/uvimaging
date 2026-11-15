@@ -2606,7 +2606,6 @@ class EngineeringLotusUI(LotusUI):
         self.sidebar_frame = nav
         items=[('Home',self.show_home,'home'),('Live View',self.show_live,'live'),
                ('Alignment',self.show_alignment,'alignment'),
-               ('Engineering',self.show_engineering,'engineering'),
                ('UV Cure',self.show_cure,'cure'),('Fan Control',self.show_fan,'fan'),
                ('Verification',self.show_verification,'verification'),
                ('Manual Control',self.show_manual,'manual'),('Logs',self.show_logs,'logs'),
@@ -2834,14 +2833,17 @@ class EngineeringLotusUI(LotusUI):
         self.auto_xy_tick()
         self.after(100,self.engineering_tick)
 
+    def show_alignment(self):
+        self.show_engineering()
+
     def show_engineering(self):
-        main=self.page_shell('engineering','Engineering')
+        main=self.page_shell('alignment','Alignment & Engineering')
         notebook=ttk.Notebook(main)
         notebook.pack(fill='both',expand=True)
         vision=tk.Frame(notebook,bg=BG)
         tools=tk.Frame(notebook,bg=BG)
         telemetry=tk.Frame(notebook,bg=BG)
-        notebook.add(vision,text='Vision & Calibration')
+        notebook.add(vision,text='Cameras & Alignment')
         notebook.add(tools,text='Motor Calibration & Reports')
         notebook.add(telemetry,text='Telemetry')
         status_row=tk.Frame(vision,bg=BG);status_row.pack(fill='x',padx=4,pady=2)
@@ -2849,9 +2851,25 @@ class EngineeringLotusUI(LotusUI):
                                              font=(FONT,9,'bold'),anchor='w',wraplength=650)
         self.alignment_status_label.pack(fill='x')
         auto_row=tk.Frame(vision,bg=BG);auto_row.pack(side='bottom',fill='x',padx=4,pady=3)
-        for text,callback in [('Calibrate XYZ',self.auto_xy_calibrate),('Start auto XYZ',self.auto_xy_start),
-                              ('STOP auto',lambda:self.auto_xy_stop('Stopped by operator'))]:
-            self.button(auto_row,text,callback).pack(side='left',padx=3)
+        auto_row.grid_columnconfigure((0,1,2,3),weight=1,uniform='combined_actions')
+        for col,(text,callback,primary,green) in enumerate([
+                ('STOP',self.emergency_stop,False,False),
+                ('Auto XYZ',self.auto_xy_start,True,False),
+                ('Motor settings',self.alignment_motor_settings,False,False),
+                ('Apply Epoxy →',self.show_epoxy,False,True)]):
+            self.button(auto_row,text,callback,primary=primary,green=green).grid(
+                row=0,column=col,sticky='ew',padx=3)
+        controls=tk.Frame(vision,bg=WHITE)
+        controls.pack(side='bottom',fill='x',padx=4,pady=2)
+        controls.grid_columnconfigure((0,1,2),weight=1,uniform='combined_axes')
+        for col,(axis,minus,plus) in enumerate([('X','←','→'),('Y','↓','↑'),('Z','▼','▲')]):
+            row=tk.Frame(controls,bg=WHITE)
+            row.grid(row=0,column=col,sticky='ew',padx=3)
+            row.grid_columnconfigure((1,2),weight=1)
+            tk.Label(row,text=axis,bg=WHITE,fg=TEXT,font=(FONT,10,'bold')).grid(row=0,column=0,padx=4)
+            self.jog_button(row,minus,axis,-1,width=2,font_size=13).grid(row=0,column=1,sticky='ew',padx=3,pady=2)
+            self.jog_button(row,plus,axis,1,width=2,font_size=13).grid(row=0,column=2,sticky='ew',padx=3,pady=2)
+        notebook.bind('<<NotebookTabChanged>>',lambda event:self.pause_alignment_tab())
         self.auto_xy_label=tk.Label(vision,text=self.auto_xy_message,bg=BG,fg=TEXT,anchor='w',
                                     wraplength=780,font=(FONT,8),height=2)
         self.auto_xy_label.pack(side='bottom',fill='x',padx=6)
@@ -2879,6 +2897,7 @@ class EngineeringLotusUI(LotusUI):
                  bg=BG,fg=TEXT,justify='left',wraplength=650).pack(anchor='w')
         self.motor_summary=tk.Label(tools,text=self.motor_summary_text(),bg=BG,fg=TEXT,justify='left')
         self.motor_summary.pack(anchor='w',pady=10)
+        self.button(tools,'Calibrate XYZ response',self.auto_xy_calibrate,primary=True).pack(anchor='w',pady=5)
         self.button(tools,'Record motor calibration',self.record_motor_calibration,primary=True).pack(anchor='w')
         tk.Label(tools,text='Session reports contain timestamped telemetry, measurement history, camera calibration,\n'
                  'motor calibration, settings, and the latest analyzed raw/overlay images.\n'
@@ -2895,6 +2914,10 @@ class EngineeringLotusUI(LotusUI):
         self.plot.pack(fill='both',expand=True,padx=8,pady=8)
         self.plot.bind('<Configure>',lambda e:self.render_plot())
         self.render_engineering()
+
+    def pause_alignment_tab(self):
+        self.end_jog()
+        self.auto_xy_stop('Auto XYZ paused: workspace tab changed')
 
     def load_demo(self):
         from PIL import Image,ImageDraw
