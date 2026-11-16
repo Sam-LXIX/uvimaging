@@ -2770,6 +2770,56 @@ class EngineeringLotusUI(LotusUI):
         return (f'Gap {gap_text} · Offset {offset_text} {unit}\n'
                 f'Tilt {tilt} · Quality {result.get("quality","—")}/100 (heuristic)\n'+timing), TEXT
 
+    def create_camera_readout(self,parent):
+        canvas=tk.Canvas(parent,bg=WHITE,height=70,width=1,highlightthickness=0,bd=0)
+        canvas.readout_result={}
+        canvas.readout_sample=False
+        canvas.bind('<Configure>',lambda event:self.paint_camera_readout(canvas))
+        canvas.bind('<Expose>',lambda event:self.paint_camera_readout(canvas))
+        return canvas
+
+    def update_camera_readout(self,canvas,result,sample=False):
+        canvas.readout_result=result
+        canvas.readout_sample=sample
+        self.paint_camera_readout(canvas)
+
+    def paint_camera_readout(self,canvas):
+        result=canvas.readout_result
+        now=time.monotonic()
+        stamp=result.get('source_stamp')
+        age=now-stamp if finite_value(stamp) else None
+        fresh=result.get('source')=='live' and age is not None and 0<=age<=2
+        valid=bool(result.get('valid') and fresh and not canvas.readout_sample)
+        cal=result.get('calibration_at_measurement') if valid else None
+        scale=cal['um_per_px'] if cal else 1
+        unit='µm' if cal else 'px'
+        width=max(1,canvas.winfo_width());column=width/3
+        canvas.delete('all')
+        canvas.create_line(0,0,width,0,fill=BORDER)
+        for i,(title,key,signed) in enumerate([('GAP','gap_px',False),('OFFSET','offset_px',True),('TILT','angle_deg',True)]):
+            x=i*column+10
+            value=result.get(key)
+            number='—'
+            if valid and finite_value(value):
+                factor=1 if key=='angle_deg' else scale
+                number=(f'{value*factor:+.2f}' if signed else f'{value*factor:.2f}')
+                number+= '°' if key=='angle_deg' else ' '+unit
+            canvas.create_text(x,12,text=title,anchor='w',fill=MUTED,font=(FONT,7,'bold'))
+            canvas.create_text(x,33,text=number,anchor='w',fill=PURPLE if valid else MUTED,font=(FONT,12,'bold'))
+            if i:canvas.create_line(i*column,8,i*column,43,fill=BORDER)
+        if canvas.readout_sample:note='SAMPLE IMAGE · live measurements hidden'
+        elif valid:
+            mode='Calibrated' if cal else 'Uncalibrated pixels'
+            note=f"{mode} · Quality {result.get('quality','—')}/100* · {result.get('processing_ms',0):.0f} ms · Age {age:.1f}s"
+        elif not fresh:note='WAITING · no recent live measurement'
+        else:note='UNAVAILABLE · '+str(result.get('reason','Check focus, ROI and lighting.'))
+        # Fit the status line without wrapping into the camera area.
+        from tkinter import font as tkfont
+        face=tkfont.Font(root=self,family=FONT,size=8)
+        while note and face.measure(note)>max(30,width-22):note=note[:-2]
+        canvas.create_text(10,58,text=note,anchor='w',fill=MUTED,font=(FONT,8))
+        canvas.readout_description=self.live_measurement_text(result,now)[0]+'\n* Quality is a heuristic, not an accuracy measurement.'
+
     def show_live(self):
         super().show_live()
         self.analysis_samples.clear()
@@ -2777,20 +2827,14 @@ class EngineeringLotusUI(LotusUI):
         self.alignment_page_active=True
         self.live_data_labels={}
         for name,screen in self.camera_views.items():
-            label=tk.Label(screen.master,text='Waiting for live measurements',bg=WHITE,fg=MUTED,
-                           font=(FONT,9),justify='left',anchor='w',height=3,width=1)
+            label=self.create_camera_readout(screen.master)
             label.pack(side='bottom',fill='x',padx=8,pady=3,before=screen)
-            label.bind('<Configure>',lambda event,w=label:w.config(wraplength=max(100,event.width-12)))
             self.live_data_labels[name]=label
 
     def refresh_live_data(self):
         for name,label in getattr(self,'live_data_labels',{}).items():
             if not label.winfo_exists():continue
-            if name in self.camera_images:
-                text,color='Loaded image preview · live measurements hidden',MUTED
-            else:
-                text,color=self.live_measurement_text(self.measurements.get(name,{}),time.monotonic())
-            label.config(text=text,fg=color)
+            self.update_camera_readout(label,self.measurements.get(name,{}),sample=name in self.camera_images)
 
     def sidebar(self,parent,active):
         # Existing navigation preserved; compact spacing leaves room on touchscreens.
@@ -3091,9 +3135,8 @@ class EngineeringLotusUI(LotusUI):
             tk.Button(head,text='Live / Retry',command=lambda n=name:self.analysis_live(n),
                       bg=PLIGHT,fg=PURPLE,relief='flat',padx=8,pady=10).pack(side='left',padx=3)
             self.button(head,'View settings',lambda n=name:self.camera_settings_dialog(n)).pack(side='right',padx=3,pady=2)
-            label=tk.Label(box,text='Waiting for image',bg=WHITE,fg=TEXT,justify='left',anchor='nw',height=3,width=1,wraplength=300,font=(FONT,8))
+            label=self.create_camera_readout(box)
             label.pack(side='bottom',fill='x',padx=5,pady=3)
-            label.bind('<Configure>',lambda event,widget=label:widget.config(wraplength=max(100,event.width-10)))
             canvas=tk.Canvas(box,bg=BLACK,width=1,height=1,highlightthickness=0)
             canvas.pack(fill='both',expand=True)
             self.engineering_widgets[name]=(canvas,label)
@@ -3345,8 +3388,8 @@ class EngineeringLotusUI(LotusUI):
             if age is not None:timing+=f" | frame age {age:.2f} s"
             text=status['views'][name]+' | '+text+'\n'+timing
             label.full_measurement_text=text
-            compact,color=self.live_measurement_text(result,time.monotonic())
-            label.config(text=compact,fg=color)
+            self.update_camera_readout(label,result,sample=name in self.analysis_samples)
+            label.full_measurement_text=text+'\nQuality is a heuristic, not an accuracy measurement.'
 
     def camera_settings_dialog(self, name):
         self.auto_xy_stop('Auto XYZ paused for view settings')
