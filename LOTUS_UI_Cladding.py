@@ -1775,6 +1775,106 @@ class LotusUI(tk.Tk):
                 term in upper for term in ('NO DATA','NOT DETECTED','NO RECENT','NOT CONFIRMED')):return 'WARNING'
         return 'INFO'
 
+    @staticmethod
+    def readable_log_message(message):
+        """Describe commands as requests; only acknowledgements imply confirmation."""
+        text=str(message).strip()
+        descriptions={
+            'TX STOP':'Stop requested', 'TX ZERO ALL':'Reset all stage positions requested',
+            'TX UV_ARM 1':'UV arming requested', 'TX UV_STOP':'UV stop requested',
+            'RX EVENT UV_DONE':'Controller reports UV curing completed',
+            'TX PING':'Controller connection check requested', 'RX PONG':'Controller responded to connection check',
+            'AUTO XYZ START':'Automatic alignment started', 'EMERGENCY STOP':'Emergency stop activated',
+        }
+        if text in descriptions:return descriptions[text]
+        if text.startswith('CAMERA '):return text.replace('CAMERA ', 'Camera ',1).replace(' VIEW:', ':',1)
+        if text.startswith('TX '):return 'Command sent: '+text[3:]
+        if text.startswith('RX OK '):return 'Controller confirmed: '+text[6:]
+        if text.startswith('RX ERR '):return 'Controller reported an error: '+text[7:]
+        if text.startswith('RX '):return 'Controller response: '+text[3:]
+        return text
+
+    @staticmethod
+    def readable_measurement(record):
+        parts=[]
+        for label,keys,unit in [('Input power',('input_power_mw','pf1_mw'),'mW'),
+                ('Output power',('output_power_mw','pf2_mw'),'mW'),
+                ('Calculated loss',('loss_db','manual_loss_db'),'dB')]:
+            value=next((record[k] for k in keys if k in record),None)
+            if value is not None:
+                try:value=f'{float(value):.3f}'
+                except (ValueError,TypeError):value=str(value)
+                parts.append(f'{label}: {value} {unit}')
+        if parts:return '; '.join(parts)+' (manual optical power readings)'
+        return '; '.join(str(k).replace('_',' ').capitalize()+': '+str(v)
+                        for k,v in record.items() if k not in ('time','timestamp'))
+
+    def read_saved_log_records(self,limit=None):
+        records=[]
+        for filename in ('verification.jsonl','hardware.jsonl'):
+            try:
+                with (self.data_dir/filename).open(encoding='utf-8',errors='replace') as stream:
+                    content=deque(enumerate(stream),maxlen=limit)
+            except FileNotFoundError:continue
+            except OSError as exc:
+                records.append(dict(id=filename,time='',system='Storage',level='ERROR',
+                    message='Unable to read '+filename,raw=str(exc),categories={'Connection / Errors'}));continue
+            for index,line in content:
+                try:
+                    record=json.loads(line)
+                    if not isinstance(record,dict):raise ValueError()
+                    stamp=str(record.get('time',record.get('timestamp','')))
+                    raw=str(record.get('event','')) if filename=='hardware.jsonl' else json.dumps(record,ensure_ascii=False)
+                    if filename=='hardware.jsonl':
+                        categories=self.log_categories(raw)
+                        system=next((n for n in ('Cameras','UV Cure','Fan','Motors / Alignment','Sensors / Power','Connection / Errors') if n in categories),'System')
+                        message=self.readable_log_message(raw);level=self.log_severity(raw)
+                    else:
+                        categories={'Measurements'};system='Measurements'
+                        message=self.readable_measurement(record);level='INFO'
+                except (ValueError,TypeError):
+                    stamp='';raw=line.strip();system='Storage';level='WARNING'
+                    message=f'Unreadable saved entry in {filename}, line {index+1}'
+                    categories={'Connection / Errors'}
+                records.append(dict(id=filename+':'+str(index),time=stamp,system=system,
+                    level=level,message=message,raw=raw,categories=categories))
+        return records
+
+    def saved_log_exports(self):
+        records=sorted(self.read_saved_log_records(),key=lambda r:r['time'])
+        counts={level:sum(r['level']==level for r in records) for level in ('INFO','WARNING','ERROR')}
+        lines=['LOTUS — SAVED ACTIVITY LOG',
+               'Exported: '+datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+               'Times use the device clock. Events are listed oldest first.',
+               f"Entries: {len(records)} | Information: {counts['INFO']} | Warnings: {counts['WARNING']} | Errors: {counts['ERROR']}",
+               'Commands marked requested or sent do not confirm physical action.',
+               'All saved hardware and verification entries are included; screen filters do not apply.', '']
+        stream=io.StringIO(newline='')
+        writer=csv.writer(stream)
+        writer.writerow(['Time (device clock)','Subsystem','Severity','Description','Technical details'])
+        for r in records:
+            stamp=r['time'].replace('T',' ') or 'Time unavailable'
+            lines.extend([f"{stamp} | {r['system']} | {r['level']}",r['message'],
+                          'Technical details: '+r['raw'],''])
+            # Prevent event text from becoming a spreadsheet formula when opened in Excel.
+            values=[stamp,r['system'],r['level'],r['message'],r['raw']]
+            writer.writerow(["'"+v if v.lstrip().startswith(('=','+','-','@')) else v for v in values])
+        if not records:lines.append('No saved events found.')
+        return '\n'.join(lines),stream.getvalue()
+
+    def export_readable_logs(self):
+        path=filedialog.asksaveasfilename(parent=self,title='Save readable logs',
+            initialfile='LOTUS_logs_'+datetime.now().strftime('%Y%m%d_%H%M%S')+'.txt',
+            defaultextension='.txt',filetypes=[('Readable text','*.txt'),('Spreadsheet CSV','*.csv')])
+        if not path:return
+        try:
+            text,csv_text=self.saved_log_exports()
+            target=Path(path)
+            target.write_text(csv_text if target.suffix.lower()=='.csv' else text,
+                              encoding='utf-8-sig' if target.suffix.lower()=='.csv' else 'utf-8')
+            messagebox.showinfo('Logs saved',str(target),parent=self)
+        except OSError as exc:messagebox.showerror('Unable to save logs',str(exc),parent=self)
+
     def show_logs(self):
         main=self.page_shell('logs','Event Log')
         self.logs_filter=getattr(self,'logs_filter','All')
@@ -1869,6 +1969,7 @@ class LotusUI(tk.Tk):
             tk.Checkbutton(top,text=text,variable=var,command=self.refresh_logs,bg=BG,
                            font=(FONT,11),pady=10).pack(anchor='w',padx=16)
         self.button(top,'Clear search',lambda:self.logs_search.set('')).pack(fill='x',padx=16,pady=6)
+        self.button(top,'Save readable logs (TXT / CSV)',self.export_readable_logs).pack(fill='x',padx=16,pady=6)
         self.button(top,'Open captures folder',self.open_captures).pack(fill='x',padx=16,pady=6)
         self.button(top,'Done',top.destroy).pack(fill='x',padx=16,pady=10)
 
@@ -1880,7 +1981,7 @@ class LotusUI(tk.Tk):
         top=tk.Toplevel(self);top.title('Event details');top.transient(self);top.configure(bg=BG)
         box=tk.Text(top,width=65,height=10,wrap='word',font=(FONT,11),bg=WHITE,fg=TEXT)
         box.pack(fill='both',expand=True,padx=12,pady=12)
-        box.insert('end',record['time']+'\n'+record['system']+' · '+record['level']+'\n\n'+record['message'])
+        box.insert('end',record['time']+'\n'+record['system']+' · '+record['level']+'\n\n'+record['message']+'\n\nTechnical details\n'+record.get('raw',record['message']))
         box.config(state='disabled')
         self.button(top,'Close',top.destroy).pack(pady=8)
 
@@ -1902,31 +2003,11 @@ class LotusUI(tk.Tk):
                 try:stamp=datetime.fromtimestamp(capture.stat().st_mtime).isoformat(timespec='seconds')
                 except OSError:stamp=''
                 add('capture:'+capture.name,stamp,'Captures',str(capture),{'Captures'})
-        for filename in ('verification.jsonl','hardware.jsonl'):
-            if filename=='verification.jsonl' and selected not in ('All','Measurements'):continue
-            if filename=='hardware.jsonl' and selected in ('Captures','Measurements'):continue
-            try:
-                with (self.data_dir/filename).open() as stream:
-                    content=deque(enumerate(stream),maxlen=2000)
-            except FileNotFoundError:continue
-            except OSError as exc:
-                add(filename,'','Storage','ERROR reading '+filename+': '+str(exc),{'Connection / Errors'});continue
-            for index,raw in content:
-                identity=filename+':'+str(index)
-                try:
-                    record=json.loads(raw)
-                    if not isinstance(record,dict):raise ValueError()
-                except (ValueError,TypeError):
-                    add(identity,'','Storage','WARNING malformed record: '+raw.strip(),{'Connection / Errors'});continue
-                stamp=record.get('time',record.get('timestamp',''))
-                if filename=='hardware.jsonl':
-                    message=str(record.get('event',''))
-                    categories=self.log_categories(message)
-                    system=next((n for n in ('Cameras','UV Cure','Fan','Motors / Alignment','Sensors / Power','Connection / Errors') if n in categories),'System')
-                else:
-                    message='; '.join(str(k)+': '+str(v) for k,v in record.items() if k not in ('time','timestamp'))
-                    categories={'Measurements'};system='Measurements'
-                add(identity,stamp,system,message,categories)
+        for record in self.read_saved_log_records(limit=2000):
+            if selected!='All' and selected not in record['categories']:continue
+            if self.logs_errors_only.get() and record['level']=='INFO':continue
+            if query and query not in ' '.join(str(record[k]) for k in ('time','system','level','message','raw')).casefold():continue
+            records.append(record)
         records.sort(key=lambda r:r['time'],reverse=True)
         old_selection=tree.selection();position=tree.yview()[0]
         children=tree.get_children()
@@ -3946,6 +4027,9 @@ class EngineeringLotusUI(LotusUI):
                 'Histories bounded: 3600 telemetry rows, 7200 measurement rows.']}
             target=Path(path);temporary=target.with_suffix('.partial')
             with zipfile.ZipFile(temporary,'w',zipfile.ZIP_DEFLATED) as archive:
+                readable_logs,csv_logs=self.saved_log_exports()
+                archive.writestr('activity_log.txt',readable_logs)
+                archive.writestr('activity_log.csv','\ufeff'+csv_logs)
                 archive.writestr('session.json',json.dumps(clean(report),indent=2,allow_nan=False))
                 archive.writestr('measurements.jsonl','\n'.join(json.dumps(clean(r),allow_nan=False) for r in history))
                 stream=io.StringIO();keys=['timestamp','connected','pcb','ambient','humidity','voltage','current','fanrpm','moving','uvactive']
