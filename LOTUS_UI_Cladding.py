@@ -623,9 +623,10 @@ class LotusUI(tk.Tk):
         self.bind('<Escape>', lambda e: self.attributes('-fullscreen', False))
 
         self.build_topbar()
-        self.content = tk.Frame(self, bg=BG)
-        self.content.pack(fill='both', expand=True)
         self.build_statusbar()
+        self.content = tk.Frame(self, bg=BG, width=1, height=1)
+        self.content.pack(fill='both', expand=True)
+        self.content.pack_propagate(False)
         self.show_home()
         self.tick()
         self.after(100, self.update_camera_views)
@@ -2900,7 +2901,7 @@ class EngineeringLotusUI(LotusUI):
         self.analysis_samples.clear()
         self.camera_images.clear()
         self.invalidate_analysis()
-        notebook=ttk.Notebook(main)
+        notebook=ttk.Notebook(main,width=1,height=1)
         notebook.pack(fill='both',expand=True)
         vision=tk.Frame(notebook,bg=BG)
         tools=tk.Frame(notebook,bg=BG)
@@ -2908,11 +2909,13 @@ class EngineeringLotusUI(LotusUI):
         notebook.add(vision,text='Cameras & Alignment')
         notebook.add(tools,text='Motor Calibration & Reports')
         notebook.add(telemetry,text='Telemetry')
-        status_row=tk.Frame(vision,bg=BG);status_row.pack(fill='x',padx=4,pady=2)
+        vision.grid_columnconfigure(0,weight=1)
+        vision.grid_rowconfigure(1,weight=1)
+        status_row=tk.Frame(vision,bg=BG);status_row.grid(row=0,column=0,sticky='ew',padx=4,pady=2)
         self.alignment_status_label=tk.Label(status_row,text='Measurement unavailable',bg=BG,fg=PURPLE,
                                              font=(FONT,9,'bold'),anchor='w',wraplength=650)
         self.alignment_status_label.pack(fill='x')
-        auto_row=tk.Frame(vision,bg=BG);auto_row.pack(side='bottom',fill='x',padx=4,pady=3)
+        auto_row=tk.Frame(vision,bg=BG);auto_row.grid(row=4,column=0,sticky='ew',padx=4,pady=3)
         auto_row.grid_columnconfigure((0,1,2,3),weight=1,uniform='combined_actions')
         for col,(text,callback,primary,green) in enumerate([
                 ('STOP',self.emergency_stop,False,False),
@@ -2922,7 +2925,7 @@ class EngineeringLotusUI(LotusUI):
             self.button(auto_row,text,callback,primary=primary,green=green).grid(
                 row=0,column=col,sticky='ew',padx=3)
         controls=tk.Frame(vision,bg=WHITE)
-        controls.pack(side='bottom',fill='x',padx=4,pady=2)
+        controls.grid(row=3,column=0,sticky='ew',padx=4,pady=2)
         controls.grid_columnconfigure((0,1,2),weight=1,uniform='combined_axes')
         for col,(axis,minus,plus) in enumerate([('X','←','→'),('Y','↓','↑'),('Z','▼','▲')]):
             row=tk.Frame(controls,bg=WHITE)
@@ -2934,9 +2937,9 @@ class EngineeringLotusUI(LotusUI):
         notebook.bind('<<NotebookTabChanged>>',lambda event:self.pause_alignment_tab())
         self.auto_xy_label=tk.Label(vision,text=self.auto_xy_message,bg=BG,fg=TEXT,anchor='w',
                                     wraplength=780,font=(FONT,8),height=2)
-        self.auto_xy_label.pack(side='bottom',fill='x',padx=6)
+        self.auto_xy_label.grid(row=2,column=0,sticky='ew',padx=6)
         panels=tk.Frame(vision,bg=BG)
-        panels.pack(fill='both',expand=True)
+        panels.grid(row=1,column=0,sticky='nsew')
         panels.grid_rowconfigure(0,weight=1)
         panels.grid_columnconfigure((0,1),weight=1,uniform='camera_panels')
         for column,name in enumerate(('X VIEW','Y VIEW')):
