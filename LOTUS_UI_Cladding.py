@@ -1761,41 +1761,90 @@ class LotusUI(tk.Tk):
         self.button(panel, 'Save Calculated Loss', save, primary=True).pack(pady=5)
         self.button(panel, '← Splicing Procedure', self.show_splice).pack(pady=5)
 
+    @staticmethod
+    def log_categories(event):
+        import re
+        words=set(re.findall(r'[A-Z_]+',event.upper()))
+        categories=set()
+        for category,terms in [
+                ('Cameras',{'CAMERA','CAMERAS','LIGHT','ROI','DETECTOR'}),
+                ('Motors / Alignment',{'MOVE','MOTOR','MOTORS','JOG','ZERO','STOP','AUTO','XYZ','CALIBRATION','FAULT'}),
+                ('UV Cure',{'UV','UV_ARM','UV_CURE','UV_STOP','UV_DONE','CURING'}),
+                ('Fan',{'FAN','FANRPM','PWM'}),
+                ('Sensors / Power',{'STATUS','TELEMETRY','SENSOR','SENSORS','BATTERY','VOLTAGE','INA','TMP','SHT'}),
+                ('Connection / Errors',{'ESP','CONNECTED','DISCONNECTED','PING','PONG','ERROR','ERR','FAILED','TIMEOUT','FAULT','EMERGENCY'})]:
+            if words & terms:categories.add(category)
+        return categories
+
     def show_logs(self):
-        main = self.page_shell('logs', 'Logs & Statistics',
-                               'Saved captures, verification records and hardware events')
-        captures = sorted(self.data_dir.glob('*.png'), reverse=True)
-        state = self.hw.snapshot()
-        summary = tk.Frame(main, bg=BG)
-        summary.pack(fill='x', pady=(0, 8))
-        self.metric(summary, 'Saved Captures', str(len(captures)))
-        self.metric(summary, 'Hardware', 'Online' if state.get('connected') else 'Offline',
-                    color=GREEN if state.get('connected') else RED)
-        self.metric(summary, 'PCB Temp', self.fmt_num(state.get('pcb'), '', 1), '°C')
-        self.metric(summary, 'Humidity', self.fmt_num(state.get('humidity'), '', 1), '%')
-        folder_bar = tk.Frame(main, bg=BG)
-        folder_bar.pack(fill='x', pady=(0, 5))
-        self.button(folder_bar, 'Open Captures Folder', self.open_captures).pack(side='left')
-        tk.Label(folder_bar, text=str(self.data_dir), bg=BG, fg=MUTED,
-                 font=(FONT, 8)).pack(side='left', padx=10)
-        outer, panel = self.bordered(main)
-        outer.pack(fill='both', expand=True)
-        box = tk.Text(panel, bg=WHITE, fg=TEXT, relief='flat',
-                      font=(FONT, 9), wrap='word')
-        box.pack(fill='both', expand=True, padx=12, pady=12)
-        box.insert('end', 'CAPTURES\n' + ('\n'.join(p.name for p in captures)
-                                         or 'No captures saved yet.'))
-        for heading, filename in [
-            ('MANUAL MEASUREMENTS', 'verification.jsonl'),
-            ('HARDWARE EVENTS', 'hardware.jsonl'),
-        ]:
+        main = self.page_shell('logs', 'Logs', 'Filter events by subsystem')
+        self.logs_filter=getattr(self,'logs_filter','All')
+        filters=tk.Frame(main,bg=BG)
+        filters.pack(fill='x')
+        self.logs_filter_buttons={}
+        names=('All','Cameras','Motors / Alignment','UV Cure','Fan',
+               'Sensors / Power','Connection / Errors','Captures','Measurements')
+        filters.grid_columnconfigure(tuple(range(5)),weight=1,uniform='log_filters')
+        for i,name in enumerate(names):
+            button=tk.Button(filters,text=name,command=lambda n=name:self.select_log_filter(n),
+                             bg=PLIGHT,fg=PURPLE,relief='flat',font=(FONT,9,'bold'),padx=5,pady=10)
+            button.grid(row=i//5,column=i%5,sticky='ew',padx=2,pady=2)
+            self.logs_filter_buttons[name]=button
+        toolbar=tk.Frame(main,bg=BG);toolbar.pack(fill='x',pady=4)
+        self.button(toolbar,'Refresh',self.refresh_logs).pack(side='left',padx=3)
+        self.button(toolbar,'Open Captures Folder',self.open_captures).pack(side='left',padx=3)
+        panel=tk.Frame(main,bg=WHITE);panel.pack(fill='both',expand=True)
+        scrollbar=tk.Scrollbar(panel);scrollbar.pack(side='right',fill='y')
+        self.logs_box=tk.Text(panel,bg=WHITE,fg=TEXT,relief='flat',font=(FONT,9),
+                              wrap='word',yscrollcommand=scrollbar.set)
+        self.logs_box.pack(fill='both',expand=True,padx=8,pady=5)
+        scrollbar.config(command=self.logs_box.yview)
+        self.select_log_filter(self.logs_filter)
+
+    def select_log_filter(self, name):
+        self.logs_filter=name
+        for key,button in self.logs_filter_buttons.items():
+            button.config(bg=PURPLE if key==name else PLIGHT,fg=WHITE if key==name else PURPLE)
+        self.refresh_logs()
+
+    def refresh_logs(self, follow=False):
+        box=getattr(self,'logs_box',None)
+        if box is None or not box.winfo_exists():return
+        selected=self.logs_filter
+        lines=[]
+        if selected in ('All','Captures'):
+            captures=sorted(self.data_dir.glob('*.png'),reverse=True)
+            lines+=['CAPTURES']+[p.name for p in captures]
+        for filename,heading in [('verification.jsonl','MEASUREMENTS'),('hardware.jsonl','EVENTS')]:
+            if filename=='verification.jsonl' and selected not in ('All','Measurements'):continue
+            if filename=='hardware.jsonl' and selected in ('Captures','Measurements'):continue
             try:
-                box.insert('end', f'\n\n{heading}\n' + (self.data_dir / filename).read_text())
-            except FileNotFoundError:
-                pass
-            except OSError:
-                box.insert('end', f'\nUnable to read {filename}.')
+                content=(self.data_dir/filename).read_text().splitlines()
+            except FileNotFoundError:continue
+            except OSError as exc:
+                lines.append('Unable to read '+filename+': '+str(exc));continue
+            records=[]
+            for raw in content[-2000:]:
+                try:
+                    record=json.loads(raw)
+                    if not isinstance(record,dict):raise ValueError()
+                except (ValueError,TypeError):
+                    if selected=='All':records.append('[Unparsed] '+raw)
+                    continue
+                event=str(record.get('event',''))
+                if filename=='hardware.jsonl':
+                    if selected!='All' and selected not in self.log_categories(event):continue
+                    records.append(str(record.get('time',''))+'  '+event)
+                else:
+                    records.append(json.dumps(record,ensure_ascii=False))
+            if records:lines+=['\n'+heading]+records
+        position=box.yview()[0]
+        at_end=box.yview()[1]>=.99
+        box.config(state='normal');box.delete('1.0','end')
+        box.insert('end','\n'.join(lines) if lines else 'No records in this category yet.')
         box.config(state='disabled')
+        if follow and at_end:box.see('end')
+        elif follow:box.yview_moveto(position)
 
     def log_hardware_event(self, text):
         try:
@@ -1807,6 +1856,8 @@ class LotusUI(tk.Tk):
                 }) + '\n')
         except OSError:
             pass
+
+        self.refresh_logs(follow=True)
 
     # ------------------------------------------------------------------
     # Periodic UI update / shutdown
@@ -1832,6 +1883,14 @@ class LotusUI(tk.Tk):
         elif self.last_hw_connected and not self.esp32_connected:
             self.log_hardware_event('ESP32 disconnected')
         self.last_hw_connected = self.esp32_connected
+        camera_states=getattr(self,'logged_camera_states',{})
+        for name,index in self.camera_order.items():
+            _,camera_state=self.feeds.snapshot(index)
+            if camera_states.get(name)!=camera_state:
+                camera_states[name]=camera_state
+                self.log_hardware_event('CAMERA '+name+': '+camera_state)
+        self.logged_camera_states=camera_states
+
 
         event = state.get('last_event') or ''
         if event and event != self.last_seen_event:
