@@ -86,6 +86,6 @@ int main(void) {
 
     def test_version_consistency(self):
         for name in ('main/main.c','CMakeLists.txt','flash_firmware.py','README.txt'):
-            self.assertIn('1.2.5-s3-8mb',(ROOT/'firmware/LOTUS_ESP32S3_8MB'/name).read_text())
+            self.assertIn('1.2.6-s3-8mb',(ROOT/'firmware/LOTUS_ESP32S3_8MB'/name).read_text())
 
 if __name__=='__main__':unittest.main()

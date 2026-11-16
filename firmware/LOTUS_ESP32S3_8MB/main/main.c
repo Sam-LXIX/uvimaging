@@ -26,7 +26,12 @@
 // ESP-IDF 5.4.x. No Arduino framework required.
 // -----------------------------------------------------------------------------
 
-#define FW_VERSION "1.2.5-s3-8mb"
+#define FW_VERSION "1.2.6-s3-8mb"
+#define UV_MAX_SECONDS 900
+
+static bool uv_cure_parameters_valid(int seconds, int percent) {
+    return seconds >= 1 && seconds <= UV_MAX_SECONDS && percent >= 1 && percent <= 100;
+}
 
 // Motor control
 #define PIN_X_STEP       4
@@ -526,11 +531,11 @@ static void print_status(void) {
     zpos = g_pos_z;
     state_unlock();
 
-    printf("STATUS uvmax=300 pcb=%.2f ambient=%.2f humidity=%.1f voltage=%.3f current=%.1f power=%.2f "
+    printf("STATUS uvmax=%d pcb=%.2f ambient=%.2f humidity=%.1f voltage=%.3f current=%.1f power=%.2f "
            "tmpok=%d shtok=%d inaok=%d fanrpm=%lu fanpct=%d fanauto=%d light=%.1f "
            "uv=%d uvactive=%d moving=%d xfault=%d yfault=%d zfault=%d "
            "xpos=%ld ypos=%ld zpos=%ld\n",
-           pcb, amb, hum, volts, current, power,
+           UV_MAX_SECONDS, pcb, amb, hum, volts, current, power,
            tmp_ok ? 1 : 0, sht_ok ? 1 : 0, ina_ok ? 1 : 0,
            (unsigned long)rpm, fan_pct, fan_auto ? 1 : 0, light_pct,
            uv_pct, uv_active ? 1 : 0, moving ? 1 : 0,
@@ -764,7 +769,7 @@ static void handle_command(char *line) {
             printf("ERR UV_CURE not_armed\n");
             return;
         }
-        if (seconds < 1 || seconds > 300 || percent < 1 || percent > 100) {
+        if (!uv_cure_parameters_valid(seconds, percent)) {
             printf("ERR UV_CURE range\n");
             return;
         }

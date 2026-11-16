@@ -14,7 +14,7 @@ Measurements are saved in `~/.lotus_ui/verification.jsonl`.
 Camera lighting defaults to 12.5%, with a 50% maximum. UV intensity is independent.
 Python updates do not flash the controller: follow the
 [firmware instructions](firmware/LOTUS_ESP32S3_8MB/README.txt) to install
-firmware 1.2.5-s3-8mb and its fractional lighting control/ceiling.
+firmware 1.2.6-s3-8mb and its fractional lighting control/ceiling.
 That document also records the unresolved Rev C motor-pin mismatch.
 
 - [Battery estimate limitations](BATTERY_ESTIMATE.md)
@@ -23,3 +23,8 @@ That document also records the unresolved Rev C motor-pin mismatch.
 
 Run the headless tests with `python3 -m unittest discover -s checks -v`.
 Tests need NumPy/Pillow; host firmware tests use GCC and do not touch hardware.
+
+UV cure duration defaults to 8 minutes (480 seconds). Settings offers 10, 20,
+30 seconds and 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15 minute presets.
+Durations above 5 minutes require building/flashing the included ESP32 firmware
+1.2.6-s3-8mb; updating the Python UI alone does not raise the controller limit.

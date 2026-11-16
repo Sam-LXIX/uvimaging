@@ -556,7 +556,7 @@ class LotusUI(tk.Tk):
         self.data_dir = Path.home() / '.lotus_ui'
         self.preferences = {
             'Default step': 'Fine',
-            'Cure duration': '300 s',
+            'Cure duration': '480 s',
             'UV intensity': '50%',
             'Camera lighting': '12.5%',
             'Fan speed': 'Automatic',
@@ -572,10 +572,10 @@ class LotusUI(tk.Tk):
         except (OSError, ValueError, AttributeError):
             pass
 
-        # One-time migration requested for the five-minute cure profile.
-        if saved.get('_Cure profile') != '300s-v1':
-            self.preferences['Cure duration'] = '300 s'
-        self.preferences['_Cure profile'] = '300s-v1'
+        # One-time migration requested for the eight-minute cure profile.
+        if saved.get('_Cure profile') != '480s-v2':
+            self.preferences['Cure duration'] = '480 s'
+        self.preferences['_Cure profile'] = '480s-v2'
         # One-time migration for camera illumination only; UV intensity remains independent.
         if saved.get('_Camera lighting profile') != '12p5-max50-v1':
             self.preferences['Camera lighting'] = '12.5%'
@@ -1366,7 +1366,7 @@ class LotusUI(tk.Tk):
     def setting_choices():
         return {
             'Default step': ('Fine', 'Medium', 'Coarse'),
-            'Cure duration': ('10 s', '20 s', '30 s', '60 s', '120 s', '180 s', '240 s', '300 s'),
+            'Cure duration': ('10 s', '20 s', '30 s', '60 s', '120 s', '180 s', '240 s', '300 s', '360 s', '420 s', '480 s', '600 s', '720 s', '900 s'),
             'UV intensity': ('25%', '50%', '75%', '100%'),
             'Camera lighting': ('Off', '12.5%', '25%', '50%'),
             'Fan speed': ('Automatic', '0%', '25%', '50%', '75%', '100%'),
@@ -1410,8 +1410,9 @@ class LotusUI(tk.Tk):
         top.title(key)
         top.transient(self)
         top.configure(bg=BG)
+        columns=4 if key=='Cure duration' else 2
         tk.Label(top,text=key,bg=BG,fg=TEXT,font=(FONT,14,'bold')).grid(
-            row=0,column=0,columnspan=2,padx=16,pady=12)
+            row=0,column=0,columnspan=columns,padx=16,pady=12)
         options = self.setting_choices()[key]
         for i,value in enumerate(options):
             def select(choice=value):
@@ -1421,11 +1422,12 @@ class LotusUI(tk.Tk):
                 top.destroy()
                 self.save_preference(key,choice)
                 self.sync_settings_values()
-            self.button(top,value,select,primary=value==self.preferences[key]).grid(
-                row=1+i//2,column=i%2,sticky='ew',padx=8,pady=6)
-        top.grid_columnconfigure((0,1),weight=1)
+            caption=(f'{int(value.split()[0])//60} min' if int(value.split()[0])%60==0 else value) if key=='Cure duration' else value
+            self.button(top,caption,select,primary=value==self.preferences[key]).grid(
+                row=1+i//columns,column=i%columns,sticky='ew',padx=8,pady=6)
+        top.grid_columnconfigure(tuple(range(columns)),weight=1)
         self.button(top,'Cancel',top.destroy).grid(
-            row=1+(len(options)+1)//2,column=0,columnspan=2,sticky='ew',padx=8,pady=10)
+            row=1+(len(options)+columns-1)//columns,column=0,columnspan=columns,sticky='ew',padx=8,pady=10)
 
     def save_preference(self, key, value):
         if key == 'Power source' and hasattr(self, '_battery_estimate'):
@@ -1635,7 +1637,8 @@ class LotusUI(tk.Tk):
         maximum=int(self.hw.snapshot().get('uvmax',120))
         if not 1 <= seconds <= maximum:
             messagebox.showerror('Firmware update required',
-                f'This controller supports up to {maximum} seconds. Flash the included cure300 firmware for a 300-second cure.',parent=self)
+                f'This controller supports up to {maximum} seconds. The selected cure needs {seconds} seconds. '
+                'Build and flash firmware/LOTUS_ESP32S3_8MB (1.2.6 or later) for cures up to 15 minutes.',parent=self)
             return
         intensity = int(self.preferences['UV intensity'].rstrip('%'))
         if not messagebox.askyesno(

@@ -1,4 +1,4 @@
-LOTUS ESP32-S3 / 8 MB flash — 1.2.5-s3-8mb
+LOTUS ESP32-S3 / 8 MB flash — 1.2.6-s3-8mb
 
 This is a fresh ESP-IDF source project, not a precompiled binary.
 Build on the Pi using an installed ESP-IDF 5.4.x or 5.5.x ESP32-S3 toolchain.
@@ -16,7 +16,7 @@ INSTALL FROM GITHUB
 4. Build and flash:
    bash ~/uvimaging/firmware/LOTUS_ESP32S3_8MB/build_and_flash.sh
 5. When flashing completes, press RESET/EN once without BOOT.
-6. Open LOTUS UI and verify firmware 1.2.5-s3-8mb in Diagnostics.
+6. Open LOTUS UI and verify firmware 1.2.6-s3-8mb in Diagnostics.
 
 INSTALL FROM ZIP
 1. Save LOTUS_ESP32S3_8MB.zip to the Pi Downloads folder.
@@ -27,7 +27,7 @@ INSTALL FROM ZIP
 5. Build and flash with:
    bash ~/Lotus/LOTUS_ESP32S3_8MB/build_and_flash.sh
 6. When flashing completes, press RESET/EN once without holding BOOT.
-7. Verify PONG and firmware version 1.2.5-s3-8mb in the UI Diagnostics.
+7. Verify PONG and firmware version 1.2.6-s3-8mb in the UI Diagnostics.
    Do not start automatic alignment until controller communication and
    manual axis directions have been checked. Recalibrate motor response
    after changing the controller.
@@ -44,7 +44,7 @@ Native USB Serial/JTAG; LOTUS PING/STATUS and command protocol.
 Left X and right Y/Z motor commands, fault monitoring, STOP and host timeout.
 TMP75 PCB temperature, SHT41 humidity/temperature, INA260 voltage/current/power.
 Fan automatic control and manual speed, with IO40 tachometer.
-UV arm/disarm and timed curing up to 300 seconds. UV starts OFF and motors
+UV arm/disarm and timed curing up to 900 seconds (15 minutes). UV starts OFF and motors
 start disabled. Starting the firmware alone does not command a motor move.
 Camera illumination (GPIO17) starts at 12.5% and accepts 0–50%, including
 fractional percentages. Invalid commands and PWM update failures return ERR.
@@ -53,7 +53,7 @@ Voltage is input-bus voltage. The UI's TalentCell percentage is a rough voltage
 estimate; see BATTERY_ESTIMATE.md in the repository root for its limitations.
 
 Updating Python alone does not update firmware startup brightness or its 50%
-limit. Build/flash this revision and verify 1.2.5-s3-8mb in Diagnostics.
+limit. Build/flash this revision and verify 1.2.6-s3-8mb in Diagnostics.
 
 PIN ASSIGNMENTS (same as existing full controller source)
 X STEP/DIR/ENABLE/FAULT: 4 / 5 / 12 / 33
@@ -75,3 +75,9 @@ ESP32-S3, 8 MB, DIO, 40 MHz; native USB Serial/JTAG console; 1000 Hz RTOS.
 PSRAM disabled because the module PSRAM type has not been identified.
 The default app partition need not occupy all 8 MB of physical flash.
 
+
+UV DURATION UPDATE
+The UI defaults to 480 seconds (8 minutes), with presets from 10 seconds to
+15 minutes. Build/flash 1.2.6 to enable durations above the previous 300-second
+limit; STATUS reports uvmax=900. Manual stop and controller shutoff remain active.
+This source revision requires an ESP-IDF build and physical timer verification.
