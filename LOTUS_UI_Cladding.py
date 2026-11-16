@@ -669,34 +669,15 @@ class LotusUI(tk.Tk):
         self.temp_label.pack(side='right', padx=6)
 
     def build_statusbar(self):
-        """Create persistent status widgets; update labels without flicker."""
-        self.status = tk.Frame(self, bg=WHITE, height=54)
-        self.status.pack(fill='x', side='bottom')
-        self.status.pack_propagate(False)
-        self.status_cells = {}
-        wrap = tk.Frame(self.status, bg=WHITE)
-        wrap.pack(fill='both', expand=True, padx=8, pady=6)
-        for index, name in enumerate(('Raspberry Pi', 'ESP32', 'Motors',
-                                      'Humidity', 'Fan', 'UV System', 'Battery')):
-            cell = tk.Frame(wrap, bg=WHITE)
-            cell.pack(side='left', expand=True, fill='both')
-            dot = tk.Label(cell, text='●', font=(FONT, 11, 'bold'), fg=MUTED,
-                           bg=WHITE)
-            dot.pack(side='left', padx=(2, 4))
-            txt = tk.Frame(cell, bg=WHITE)
-            txt.pack(side='left')
-            tk.Label(txt, text=name, font=(FONT, 7), fg=MUTED,
-                     bg=WHITE).pack(anchor='w')
-            value = tk.Label(txt, text='—', font=(FONT, 8, 'bold'),
-                             fg=TEXT, bg=WHITE)
-            value.pack(anchor='w')
-            self.status_cells[name] = (dot, value)
-            if index != 5:
-                tk.Frame(wrap, bg=BORDER, width=1).pack(side='left',
-                                                        fill='y', padx=4)
-        self.refresh_status()
+        """Draw the footer on one surface to avoid partial child-widget repaints."""
+        self.status=tk.Canvas(self,bg=WHITE,height=54,highlightthickness=0,bd=0)
+        self.status.pack(fill='x',side='bottom')
+        self.status_render_key=None
+        self.status.bind('<Configure>',lambda event:self.refresh_status(force=True))
+        self.status.bind('<Expose>',lambda event:self.refresh_status(force=True))
+        self.refresh_status(force=True)
 
-    def refresh_status(self):
+    def refresh_status(self, force=False):
         state = self.hw.snapshot() if hasattr(self, 'hw') else {}
         connected = bool(state.get('connected'))
         fault = any(state.get(k, 0) for k in ('xfault', 'yfault', 'zfault'))
@@ -721,14 +702,21 @@ class LotusUI(tk.Tk):
                           state.get('uvactive') else MUTED),
             'Battery': self.battery_display(state),
         }
-        for name, (text, color) in items.items():
-            dot, value = self.status_cells[name]
-            if value.cget('text') != text:
-                value.config(text=text)
-            if value.cget('fg') != (TEXT if color == MUTED else color):
-                value.config(fg=TEXT if color == MUTED else color)
-            if dot.cget('fg') != color:
-                dot.config(fg=color)
+        width=max(1,self.status.winfo_width())
+        height=max(1,self.status.winfo_height())
+        key=(width,height,tuple(items.items()))
+        if not force and key==self.status_render_key:return
+        self.status_render_key=key
+        self.status.delete('all')
+        cell_width=width/len(items)
+        for index,(name,(text,color)) in enumerate(items.items()):
+            x=index*cell_width
+            if index:
+                self.status.create_line(x,6,x,height-6,fill=BORDER)
+            self.status.create_oval(x+9,height/2-4,x+17,height/2+4,fill=color,outline=color)
+            self.status.create_text(x+24,14,text=name,anchor='w',fill=MUTED,font=(FONT,7))
+            self.status.create_text(x+24,34,text=text,anchor='w',
+                                    fill=TEXT if color==MUTED else color,font=(FONT,8,'bold'))
 
     def clear(self):
         self.end_jog()
