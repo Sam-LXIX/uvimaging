@@ -1776,30 +1776,27 @@ class LotusUI(tk.Tk):
         return 'INFO'
 
     def show_logs(self):
-        main=self.page_shell('logs','Event Log','Timestamped activity and saved records')
+        main=self.page_shell('logs','Event Log')
         self.logs_filter=getattr(self,'logs_filter','All')
         self.logs_search=tk.StringVar(self)
         self.logs_errors_only=tk.BooleanVar(self,value=False)
         self.logs_follow=tk.BooleanVar(self,value=False)
-        self.logs_category_button=tk.Button(main,text='Category: '+self.logs_filter,
-            command=self.choose_log_category,bg=PLIGHT,fg=PURPLE,font=(FONT,10,'bold'),pady=8,relief='flat')
-        self.logs_category_button.pack(fill='x',pady=3)
         toolbar=tk.Frame(main,bg=BG);toolbar.pack(fill='x',pady=4)
-        tk.Label(toolbar,text='Search',bg=BG,fg=MUTED,font=(FONT,9)).pack(side='left',padx=4)
-        search=tk.Entry(toolbar,textvariable=self.logs_search,font=(FONT,11),relief='solid',bd=1)
-        search.pack(side='left',fill='x',expand=True,ipady=8,padx=4)
-        self.button(toolbar,'Refresh',self.refresh_logs).pack(side='left',padx=3)
-        self.button(toolbar,'Captures folder',self.open_captures).pack(side='left',padx=3)
-        options=tk.Frame(main,bg=BG);options.pack(fill='x',pady=3)
-        for text,var in [('Warnings / errors only',self.logs_errors_only),('Follow newest',self.logs_follow)]:
-            tk.Checkbutton(options,text=text,variable=var,command=self.refresh_logs,bg=BG,
-                           fg=TEXT,font=(FONT,9),pady=4).pack(side='left',padx=4)
-        self.logs_count=tk.Label(options,text='',bg=BG,fg=MUTED,font=(FONT,8))
-        self.logs_count.pack(side='right',padx=4)
-        detail=tk.Frame(main,bg=WHITE);detail.pack(side='bottom',fill='x',pady=(5,0))
-        tk.Label(detail,text='SELECTED EVENT',bg=WHITE,fg=MUTED,font=(FONT,8,'bold')).pack(anchor='w',padx=8,pady=3)
-        self.logs_detail=tk.Text(detail,height=2,bg=WHITE,fg=TEXT,font=(FONT,9),wrap='word',relief='flat')
-        self.logs_detail.pack(fill='x',padx=8,pady=(0,5));self.logs_detail.config(state='disabled')
+        toolbar.grid_columnconfigure((0,1,2,3),weight=1,uniform='log_toolbar')
+        self.logs_category_button=tk.Button(toolbar,text='Category: '+self.logs_filter,
+            command=self.choose_log_category,bg=PLIGHT,fg=PURPLE,font=(FONT,10,'bold'),pady=10,relief='flat')
+        self.logs_category_button.grid(row=0,column=0,sticky='ew',padx=3)
+        self.button(toolbar,'Search / Options',self.open_log_options).grid(row=0,column=1,sticky='ew',padx=3)
+        self.button(toolbar,'Refresh',self.refresh_logs).grid(row=0,column=2,sticky='ew',padx=3)
+        self.button(toolbar,'Event details',self.open_log_details).grid(row=0,column=3,sticky='ew',padx=3)
+        self.logs_count=tk.Label(main,text='',bg=BG,fg=MUTED,font=(FONT,8),anchor='w')
+        self.logs_count.pack(fill='x',padx=4,pady=2)
+        navigation=tk.Frame(main,bg=BG)
+        navigation.pack(side='bottom',fill='x',pady=4)
+        navigation.grid_columnconfigure((0,1,2,3),weight=1,uniform='log_navigation')
+        for col,(caption,amount,units) in enumerate([('▲ Up',-1,'units'),('Page ↑',-1,'pages'),('Page ↓',1,'pages'),('▼ Down',1,'units')]):
+            tk.Button(navigation,text=caption,command=lambda n=amount,u=units:self.scroll_logs('scroll',n,u),
+                      bg=PLIGHT,fg=PURPLE,font=(FONT,10,'bold'),pady=12,relief='flat').grid(row=0,column=col,sticky='ew',padx=3)
         style=ttk.Style(self)
         style.configure('LotusLog.Treeview',font=(FONT,9),rowheight=32,background=WHITE,
                         fieldbackground=WHITE,foreground=TEXT)
@@ -1822,17 +1819,12 @@ class LotusUI(tk.Tk):
         self.logs_tree.tag_configure('odd',background='#F3F1F8')
         self.logs_tree.tag_configure('ERROR',foreground=RED)
         self.logs_tree.tag_configure('WARNING',foreground='#8A5500')
-        navigation=tk.Frame(panel,bg=BG)
-        navigation.grid(row=0,column=2,sticky='ns',padx=3)
-        for caption,amount,units in [('▲',-1,'units'),('Page ↑',-1,'pages'),('Page ↓',1,'pages'),('▼',1,'units')]:
-            tk.Button(navigation,text=caption,command=lambda n=amount,u=units:self.scroll_logs('scroll',n,u),
-                      bg=PLIGHT,fg=PURPLE,font=(FONT,10,'bold'),width=6,pady=12,relief='flat').pack(fill='x',pady=3)
         self.logs_tree.bind('<ButtonPress-1>',self.start_log_drag,add='+')
         self.logs_tree.bind('<B1-Motion>',self.drag_logs,add='+')
         self.logs_tree.bind('<MouseWheel>',lambda event:self.scroll_logs('scroll',-1 if event.delta>0 else 1,'units'))
         self.logs_tree.bind('<Button-4>',lambda event:self.scroll_logs('scroll',-1,'units'))
         self.logs_tree.bind('<Button-5>',lambda event:self.scroll_logs('scroll',1,'units'))
-        self.logs_tree.bind('<<TreeviewSelect>>' ,lambda event:self.show_log_detail())
+        self.logs_tree.bind('<Double-1>',lambda event:self.open_log_details())
         self.logs_search.trace_add('write',lambda *args:self.refresh_logs())
         self.select_log_filter(self.logs_filter)
 
@@ -1868,12 +1860,29 @@ class LotusUI(tk.Tk):
             self.scroll_logs('scroll',rows,'units');self.logs_drag_y=event.y
         return 'break'
 
-    def show_log_detail(self):
+    def open_log_options(self):
+        top=tk.Toplevel(self);top.title('Search logs');top.transient(self);top.configure(bg=BG)
+        tk.Label(top,text='Search messages',bg=BG,font=(FONT,12,'bold')).pack(padx=16,pady=10)
+        entry=tk.Entry(top,textvariable=self.logs_search,font=(FONT,12),width=32)
+        entry.pack(fill='x',padx=16,ipady=10);entry.focus_set()
+        for text,var in [('Warnings / errors only',self.logs_errors_only),('Follow newest',self.logs_follow)]:
+            tk.Checkbutton(top,text=text,variable=var,command=self.refresh_logs,bg=BG,
+                           font=(FONT,11),pady=10).pack(anchor='w',padx=16)
+        self.button(top,'Clear search',lambda:self.logs_search.set('')).pack(fill='x',padx=16,pady=6)
+        self.button(top,'Open captures folder',self.open_captures).pack(fill='x',padx=16,pady=6)
+        self.button(top,'Done',top.destroy).pack(fill='x',padx=16,pady=10)
+
+    def open_log_details(self):
         selected=self.logs_tree.selection()
         record=self.logs_records.get(selected[0]) if selected else None
-        text=(record['time']+' | '+record['system']+' | '+record['level']+'\n'+record['message']) if record else 'Select an event to read its full message.'
-        self.logs_detail.config(state='normal');self.logs_detail.delete('1.0','end')
-        self.logs_detail.insert('end',text);self.logs_detail.config(state='disabled')
+        if record is None:
+            messagebox.showinfo('Event details','Select an event row first.',parent=self);return
+        top=tk.Toplevel(self);top.title('Event details');top.transient(self);top.configure(bg=BG)
+        box=tk.Text(top,width=65,height=10,wrap='word',font=(FONT,11),bg=WHITE,fg=TEXT)
+        box.pack(fill='both',expand=True,padx=12,pady=12)
+        box.insert('end',record['time']+'\n'+record['system']+' · '+record['level']+'\n\n'+record['message'])
+        box.config(state='disabled')
+        self.button(top,'Close',top.destroy).pack(pady=8)
 
     def refresh_logs(self,follow=False):
         tree=getattr(self,'logs_tree',None)
@@ -1928,7 +1937,6 @@ class LotusUI(tk.Tk):
                         tags=('odd' if i%2 else 'even',r['level']))
         if old_selection and old_selection[0] in self.logs_records:tree.selection_set(old_selection[0])
         self.logs_count.config(text=f'{len(records)} shown · newest first' if records else 'No matching records')
-        self.show_log_detail()
         tree.yview_moveto(0 if self.logs_follow.get() else position)
 
     def log_hardware_event(self, text):
@@ -2999,7 +3007,7 @@ class EngineeringLotusUI(LotusUI):
         self.alignment_status_label=tk.Label(status_row,text='Measurement unavailable',bg=BG,fg=PURPLE,
                                              font=(FONT,9,'bold'),anchor='w',wraplength=650)
         self.alignment_status_label.pack(side='left',fill='x',expand=True)
-        self.camera_focus_button=tk.Button(status_row,text='Show controls',command=self.toggle_camera_focus,
+        self.camera_focus_button=tk.Button(status_row,text='Details',command=self.toggle_camera_focus,
             bg=PLIGHT,fg=PURPLE,font=(FONT,10,'bold'),padx=12,pady=8,relief='flat')
         self.camera_focus_button.pack(side='right',padx=3)
         self.button(status_row,'STOP',self.emergency_stop).pack(side='right',padx=3)
@@ -3069,7 +3077,7 @@ class EngineeringLotusUI(LotusUI):
         self.plot.pack(fill='both',expand=True,padx=8,pady=8)
         self.plot.bind('<Configure>',lambda e:self.render_plot())
         self.camera_focus_main=main
-        self.camera_focus_rows=(controls,auto_row,self.auto_xy_label)
+        self.camera_focus_rows=(self.auto_xy_label,)
         self.camera_focus_labels=[label for canvas,label in self.engineering_widgets.values()]
         self.camera_focus_active=False
         self.toggle_camera_focus()
@@ -3088,7 +3096,7 @@ class EngineeringLotusUI(LotusUI):
         heading=self.camera_focus_main.winfo_children()[0]
         if self.camera_focus_active:heading.pack_forget()
         else:heading.pack(anchor='w',before=self.camera_focus_main.winfo_children()[1])
-        self.camera_focus_button.config(text='Show controls' if self.camera_focus_active else 'Camera focus')
+        self.camera_focus_button.config(text='Details' if self.camera_focus_active else 'Hide details')
 
     def pause_alignment_tab(self):
         self.end_jog()
