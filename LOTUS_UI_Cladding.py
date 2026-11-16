@@ -2750,6 +2750,48 @@ class EngineeringLotusUI(LotusUI):
         self.analysis_thread.start()
         self.after(100,self.engineering_tick)
 
+    @staticmethod
+    def live_measurement_text(result, now):
+        stamp=result.get('source_stamp')
+        age=now-stamp if finite_value(stamp) else None
+        fresh=result.get('source')=='live' and age is not None and 0<=age<=2
+        if not fresh:
+            return 'Measurements unavailable · waiting for a fresh live frame', MUTED
+        timing=f"Analysis {result.get('processing_ms',0):.0f} ms · frame {age:.2f} s old"
+        if not result.get('valid'):
+            return 'Measurement unavailable\n'+result.get('reason','Inspect focus, ROI and lighting.')+'\n'+timing, MUTED
+        cal=result.get('calibration_at_measurement')
+        scale=cal['um_per_px'] if cal else 1
+        unit='µm' if cal else 'px (uncalibrated)'
+        gap=result.get('gap_px');offset=result.get('offset_px');angle=result.get('angle_deg')
+        gap_text=f'{gap*scale:.2f}' if finite_value(gap) else '—'
+        offset_text=f'{offset*scale:+.2f}' if finite_value(offset) else '—'
+        tilt=f'{angle:+.2f}°' if finite_value(angle) else '—'
+        return (f'Gap {gap_text} · Offset {offset_text} {unit}\n'
+                f'Tilt {tilt} · Quality {result.get("quality","—")}/100 (heuristic)\n'+timing), TEXT
+
+    def show_live(self):
+        super().show_live()
+        self.analysis_samples.clear()
+        self.invalidate_analysis()
+        self.alignment_page_active=True
+        self.live_data_labels={}
+        for name,screen in self.camera_views.items():
+            label=tk.Label(screen.master,text='Waiting for live measurements',bg=WHITE,fg=MUTED,
+                           font=(FONT,9),justify='left',anchor='w',height=3,width=1)
+            label.pack(side='bottom',fill='x',padx=8,pady=3,before=screen)
+            label.bind('<Configure>',lambda event,w=label:w.config(wraplength=max(100,event.width-12)))
+            self.live_data_labels[name]=label
+
+    def refresh_live_data(self):
+        for name,label in getattr(self,'live_data_labels',{}).items():
+            if not label.winfo_exists():continue
+            if name in self.camera_images:
+                text,color='Loaded image preview · live measurements hidden',MUTED
+            else:
+                text,color=self.live_measurement_text(self.measurements.get(name,{}),time.monotonic())
+            label.config(text=text,fg=color)
+
     def sidebar(self,parent,active):
         # Existing navigation preserved; compact spacing leaves room on touchscreens.
         nav=tk.Frame(parent,bg=WHITE,width=170)
@@ -2769,6 +2811,7 @@ class EngineeringLotusUI(LotusUI):
                       font=(FONT,9,'bold'),padx=13,pady=7).pack(fill='x',pady=1)
 
     def clear(self):
+        self.live_data_labels={}
         self.alignment_page_active=False
         self.alignment_metrics={}
         self.alignment_live_status=None
@@ -2982,6 +3025,7 @@ class EngineeringLotusUI(LotusUI):
             self.telemetry.append(row)
             self.render_plot()
         self.refresh_alignment_metrics()
+        self.refresh_live_data()
         self.auto_xy_tick()
         self.after(100,self.engineering_tick)
 
@@ -3091,8 +3135,7 @@ class EngineeringLotusUI(LotusUI):
             if self.camera_focus_active:row.grid_remove()
             else:row.grid()
         for label in self.camera_focus_labels:
-            if self.camera_focus_active:label.pack_forget()
-            else:label.pack(side='bottom',fill='x',padx=5,pady=3)
+            label.pack(side='bottom',fill='x',padx=5,pady=3)
         heading=self.camera_focus_main.winfo_children()[0]
         if self.camera_focus_active:heading.pack_forget()
         else:heading.pack(anchor='w',before=self.camera_focus_main.winfo_children()[1])
@@ -3302,7 +3345,8 @@ class EngineeringLotusUI(LotusUI):
             if age is not None:timing+=f" | frame age {age:.2f} s"
             text=status['views'][name]+' | '+text+'\n'+timing
             label.full_measurement_text=text
-            label.config(text='\n'.join(text.splitlines()[:3]))
+            compact,color=self.live_measurement_text(result,time.monotonic())
+            label.config(text=compact,fg=color)
 
     def camera_settings_dialog(self, name):
         self.auto_xy_stop('Auto XYZ paused for view settings')
