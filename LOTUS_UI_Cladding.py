@@ -2838,6 +2838,9 @@ class EngineeringLotusUI(LotusUI):
 
     def show_engineering(self):
         main=self.page_shell('alignment','Alignment & Engineering')
+        self.analysis_samples.clear()
+        self.camera_images.clear()
+        self.invalidate_analysis()
         notebook=ttk.Notebook(main)
         notebook.pack(fill='both',expand=True)
         vision=tk.Frame(notebook,bg=BG)
@@ -2883,6 +2886,8 @@ class EngineeringLotusUI(LotusUI):
             box.pack_propagate(False)
             head=tk.Frame(box,bg=WHITE);head.pack(fill='x')
             tk.Label(head,text=name,bg=WHITE,fg=PURPLE,font=(FONT,11,'bold')).pack(side='left',padx=6)
+            tk.Button(head,text='Live / Retry',command=lambda n=name:self.analysis_live(n),
+                      bg=PLIGHT,fg=PURPLE,relief='flat',padx=8,pady=10).pack(side='left',padx=3)
             self.button(head,'View settings',lambda n=name:self.camera_settings_dialog(n)).pack(side='right',padx=3,pady=2)
             label=tk.Label(box,text='Waiting for image',bg=WHITE,fg=TEXT,justify='left',anchor='nw',height=3,width=1,wraplength=300,font=(FONT,8))
             label.pack(side='bottom',fill='x',padx=5,pady=3)
@@ -2950,6 +2955,7 @@ class EngineeringLotusUI(LotusUI):
             messagebox.showerror('Image',str(exc),parent=self)
 
     def analysis_live(self,name):
+        self.resume_camera(name)
         self.analysis_samples.pop(name,None)
         self.rois.pop(name,None)
         self.invalidate_analysis()
@@ -3070,17 +3076,26 @@ class EngineeringLotusUI(LotusUI):
             result=self.measurements.get(name,{'valid':False,'reason':'Waiting for analysis...'})
             image=self.measurement_sources.get(name)
             stale=result.get('source')=='live' and time.monotonic()-(result.get('source_stamp') or 0)>2
+            preview_only=False
+            # Show camera output even while analysis is pending, stale or unavailable.
+            if name not in self.analysis_samples and (image is None or stale):
+                live, camera_status=self.feeds.snapshot(self.camera_order[name])
+                if live is not None:
+                    image=orient_camera_frame(live,name)
+                    preview_only=True
+            else:
+                camera_status='Waiting for image'
             if image is not None:
                 render_key=(id(image),result.get('measured_at'),stale,canvas.winfo_width(),canvas.winfo_height(),self.mask_views.get(name,False))
                 if getattr(canvas,'render_key',None)!=render_key:
                     canvas.render_key=render_key
                     mask=self.analysis_masks.get(name)
-                    shown=mask.copy() if self.mask_views.get(name) and mask is not None and not stale else self.overlay(image,result if not stale else {'valid':False})
+                    shown=image.copy() if preview_only else (mask.copy() if self.mask_views.get(name) and mask is not None and not stale else self.overlay(image,result if not stale else {'valid':False}))
                     shown.thumbnail((max(1,canvas.winfo_width()),max(1,canvas.winfo_height())),Image.Resampling.BILINEAR)
                     canvas.photo=ImageTk.PhotoImage(shown,master=self)
                     canvas.delete('all');canvas.create_image(canvas.winfo_width()/2,canvas.winfo_height()/2,image=canvas.photo)
             else:
-                canvas.delete('all');canvas.create_text(100,60,text='No image',fill='white')
+                canvas.delete('all');canvas.create_text(max(1,canvas.winfo_width())/2,max(1,canvas.winfo_height())/2,text=camera_status,fill='white',width=max(100,canvas.winfo_width()-20))
             origin='SAMPLE' if result.get('source')=='sample' else ('STALE' if stale else ('LIVE' if result.get('source')=='live' else 'UNAVAILABLE'))
             if result.get('valid') and not stale:
                 cal=result.get('calibration_at_measurement')
