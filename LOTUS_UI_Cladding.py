@@ -1765,75 +1765,141 @@ class LotusUI(tk.Tk):
             if words & terms:categories.add(category)
         return categories
 
+    @staticmethod
+    def log_severity(message):
+        import re
+        upper=message.upper()
+        words=set(re.findall(r'[A-Z_]+',upper))
+        if words & {'ERROR','ERR','FAILED','FAILURE','FAULT','EMERGENCY'}:return 'ERROR'
+        if words & {'WARN','WARNING','DISCONNECTED','TIMEOUT','STALE'} or any(
+                term in upper for term in ('NO DATA','NOT DETECTED','NO RECENT','NOT CONFIRMED')):return 'WARNING'
+        return 'INFO'
+
     def show_logs(self):
-        main = self.page_shell('logs', 'Logs', 'Filter events by subsystem')
+        main=self.page_shell('logs','Event Log','Timestamped activity and saved records')
         self.logs_filter=getattr(self,'logs_filter','All')
-        filters=tk.Frame(main,bg=BG)
-        filters.pack(fill='x')
+        self.logs_search=tk.StringVar(self)
+        self.logs_errors_only=tk.BooleanVar(self,value=False)
+        self.logs_follow=tk.BooleanVar(self,value=True)
+        filters=tk.Frame(main,bg=BG);filters.pack(fill='x',pady=(0,4))
         self.logs_filter_buttons={}
         names=('All','Cameras','Motors / Alignment','UV Cure','Fan',
                'Sensors / Power','Connection / Errors','Captures','Measurements')
         filters.grid_columnconfigure(tuple(range(5)),weight=1,uniform='log_filters')
         for i,name in enumerate(names):
             button=tk.Button(filters,text=name,command=lambda n=name:self.select_log_filter(n),
-                             bg=PLIGHT,fg=PURPLE,relief='flat',font=(FONT,9,'bold'),padx=5,pady=10)
+                             bg=WHITE,fg=PURPLE,relief='flat',font=(FONT,9,'bold'),padx=5,pady=9)
             button.grid(row=i//5,column=i%5,sticky='ew',padx=2,pady=2)
             self.logs_filter_buttons[name]=button
         toolbar=tk.Frame(main,bg=BG);toolbar.pack(fill='x',pady=4)
+        tk.Label(toolbar,text='Search',bg=BG,fg=MUTED,font=(FONT,9)).pack(side='left',padx=4)
+        search=tk.Entry(toolbar,textvariable=self.logs_search,font=(FONT,11),relief='solid',bd=1)
+        search.pack(side='left',fill='x',expand=True,ipady=8,padx=4)
         self.button(toolbar,'Refresh',self.refresh_logs).pack(side='left',padx=3)
-        self.button(toolbar,'Open Captures Folder',self.open_captures).pack(side='left',padx=3)
+        self.button(toolbar,'Captures folder',self.open_captures).pack(side='left',padx=3)
+        options=tk.Frame(main,bg=BG);options.pack(fill='x',pady=3)
+        for text,var in [('Warnings / errors only',self.logs_errors_only),('Follow newest',self.logs_follow)]:
+            tk.Checkbutton(options,text=text,variable=var,command=self.refresh_logs,bg=BG,
+                           fg=TEXT,font=(FONT,9),pady=4).pack(side='left',padx=4)
+        self.logs_count=tk.Label(options,text='',bg=BG,fg=MUTED,font=(FONT,8))
+        self.logs_count.pack(side='right',padx=4)
+        detail=tk.Frame(main,bg=WHITE);detail.pack(side='bottom',fill='x',pady=(5,0))
+        tk.Label(detail,text='SELECTED EVENT',bg=WHITE,fg=MUTED,font=(FONT,8,'bold')).pack(anchor='w',padx=8,pady=3)
+        self.logs_detail=tk.Text(detail,height=3,bg=WHITE,fg=TEXT,font=(FONT,9),wrap='word',relief='flat')
+        self.logs_detail.pack(fill='x',padx=8,pady=(0,5));self.logs_detail.config(state='disabled')
+        style=ttk.Style(self)
+        style.configure('LotusLog.Treeview',font=(FONT,9),rowheight=32,background=WHITE,
+                        fieldbackground=WHITE,foreground=TEXT)
+        style.configure('LotusLog.Treeview.Heading',font=(FONT,9,'bold'),padding=(8,8))
+        style.map('LotusLog.Treeview',background=[('selected',PURPLE)],foreground=[('selected',WHITE)])
         panel=tk.Frame(main,bg=WHITE);panel.pack(fill='both',expand=True)
-        scrollbar=tk.Scrollbar(panel);scrollbar.pack(side='right',fill='y')
-        self.logs_box=tk.Text(panel,bg=WHITE,fg=TEXT,relief='flat',font=(FONT,9),
-                              wrap='word',yscrollcommand=scrollbar.set)
-        self.logs_box.pack(fill='both',expand=True,padx=8,pady=5)
-        scrollbar.config(command=self.logs_box.yview)
+        panel.grid_rowconfigure(0,weight=1);panel.grid_columnconfigure(0,weight=1)
+        self.logs_tree=ttk.Treeview(panel,columns=('time','system','level','message'),
+                                   show='headings',selectmode='browse',style='LotusLog.Treeview',height=1)
+        for key,title,width in [('time','Time',155),('system','Subsystem',130),('level','Level',85),('message','Message',360)]:
+            self.logs_tree.heading(key,text=title,anchor='w')
+            self.logs_tree.column(key,width=width,minwidth=65,stretch=key=='message',anchor='w')
+        self.logs_tree.grid(row=0,column=0,sticky='nsew')
+        v=ttk.Scrollbar(panel,orient='vertical',command=self.logs_tree.yview)
+        v.grid(row=0,column=1,sticky='ns')
+        h=ttk.Scrollbar(panel,orient='horizontal',command=self.logs_tree.xview)
+        h.grid(row=1,column=0,sticky='ew')
+        self.logs_tree.configure(yscrollcommand=v.set,xscrollcommand=h.set)
+        self.logs_tree.tag_configure('even',background=WHITE)
+        self.logs_tree.tag_configure('odd',background='#F3F1F8')
+        self.logs_tree.tag_configure('ERROR',foreground=RED)
+        self.logs_tree.tag_configure('WARNING',foreground='#8A5500')
+        self.logs_tree.bind('<<TreeviewSelect>>',lambda event:self.show_log_detail())
+        self.logs_search.trace_add('write',lambda *args:self.refresh_logs())
         self.select_log_filter(self.logs_filter)
 
-    def select_log_filter(self, name):
+    def select_log_filter(self,name):
         self.logs_filter=name
         for key,button in self.logs_filter_buttons.items():
-            button.config(bg=PURPLE if key==name else PLIGHT,fg=WHITE if key==name else PURPLE)
+            button.config(bg=PURPLE if key==name else WHITE,fg=WHITE if key==name else PURPLE)
         self.refresh_logs()
 
-    def refresh_logs(self, follow=False):
-        box=getattr(self,'logs_box',None)
-        if box is None or not box.winfo_exists():return
+    def show_log_detail(self):
+        selected=self.logs_tree.selection()
+        record=self.logs_records.get(selected[0]) if selected else None
+        text=(record['time']+' | '+record['system']+' | '+record['level']+'\n'+record['message']) if record else 'Select an event to read its full message.'
+        self.logs_detail.config(state='normal');self.logs_detail.delete('1.0','end')
+        self.logs_detail.insert('end',text);self.logs_detail.config(state='disabled')
+
+    def refresh_logs(self,follow=False):
+        tree=getattr(self,'logs_tree',None)
+        if tree is None or not tree.winfo_exists():return
         selected=self.logs_filter
-        lines=[]
+        query=self.logs_search.get().strip().casefold()
+        records=[]
+        def add(identity,stamp,system,message,categories):
+            level=self.log_severity(message)
+            if selected!='All' and selected not in categories:return
+            if self.logs_errors_only.get() and level=='INFO':return
+            if query and query not in (str(stamp)+' '+system+' '+level+' '+message).casefold():return
+            records.append(dict(id=identity,time=str(stamp),system=system,level=level,message=message))
         if selected in ('All','Captures'):
-            captures=sorted(self.data_dir.glob('*.png'),reverse=True)
-            lines+=['CAPTURES']+[p.name for p in captures]
-        for filename,heading in [('verification.jsonl','MEASUREMENTS'),('hardware.jsonl','EVENTS')]:
+            for capture in self.data_dir.glob('*.png'):
+                try:stamp=datetime.fromtimestamp(capture.stat().st_mtime).isoformat(timespec='seconds')
+                except OSError:stamp=''
+                add('capture:'+capture.name,stamp,'Captures',str(capture),{'Captures'})
+        for filename in ('verification.jsonl','hardware.jsonl'):
             if filename=='verification.jsonl' and selected not in ('All','Measurements'):continue
             if filename=='hardware.jsonl' and selected in ('Captures','Measurements'):continue
             try:
-                content=(self.data_dir/filename).read_text().splitlines()
+                with (self.data_dir/filename).open() as stream:
+                    content=deque(enumerate(stream),maxlen=2000)
             except FileNotFoundError:continue
             except OSError as exc:
-                lines.append('Unable to read '+filename+': '+str(exc));continue
-            records=[]
-            for raw in content[-2000:]:
+                add(filename,'','Storage','ERROR reading '+filename+': '+str(exc),{'Connection / Errors'});continue
+            for index,raw in content:
+                identity=filename+':'+str(index)
                 try:
                     record=json.loads(raw)
                     if not isinstance(record,dict):raise ValueError()
                 except (ValueError,TypeError):
-                    if selected=='All':records.append('[Unparsed] '+raw)
-                    continue
-                event=str(record.get('event',''))
+                    add(identity,'','Storage','WARNING malformed record: '+raw.strip(),{'Connection / Errors'});continue
+                stamp=record.get('time',record.get('timestamp',''))
                 if filename=='hardware.jsonl':
-                    if selected!='All' and selected not in self.log_categories(event):continue
-                    records.append(str(record.get('time',''))+'  '+event)
+                    message=str(record.get('event',''))
+                    categories=self.log_categories(message)
+                    system=next((n for n in ('Cameras','UV Cure','Fan','Motors / Alignment','Sensors / Power','Connection / Errors') if n in categories),'System')
                 else:
-                    records.append(json.dumps(record,ensure_ascii=False))
-            if records:lines+=['\n'+heading]+records
-        position=box.yview()[0]
-        at_end=box.yview()[1]>=.99
-        box.config(state='normal');box.delete('1.0','end')
-        box.insert('end','\n'.join(lines) if lines else 'No records in this category yet.')
-        box.config(state='disabled')
-        if follow and at_end:box.see('end')
-        elif follow:box.yview_moveto(position)
+                    message='; '.join(str(k)+': '+str(v) for k,v in record.items() if k not in ('time','timestamp'))
+                    categories={'Measurements'};system='Measurements'
+                add(identity,stamp,system,message,categories)
+        records.sort(key=lambda r:r['time'],reverse=True)
+        old_selection=tree.selection();position=tree.yview()[0]
+        children=tree.get_children()
+        if children:tree.delete(*children)
+        self.logs_records={r['id']:r for r in records}
+        for i,r in enumerate(records):
+            tree.insert('', 'end',iid=r['id'],values=(r['time'].replace('T',' ')[:19],r['system'],r['level'],r['message']),
+                        tags=('odd' if i%2 else 'even',r['level']))
+        if old_selection and old_selection[0] in self.logs_records:tree.selection_set(old_selection[0])
+        self.logs_count.config(text=f'{len(records)} shown · newest first' if records else 'No matching records')
+        self.show_log_detail()
+        tree.yview_moveto(0 if self.logs_follow.get() else position)
 
     def log_hardware_event(self, text):
         try:
