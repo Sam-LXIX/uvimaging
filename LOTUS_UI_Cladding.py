@@ -719,6 +719,7 @@ class LotusUI(tk.Tk):
                                     fill=TEXT if color==MUTED else color,font=(FONT,8,'bold'))
 
     def clear(self):
+        self.close_setting_choices()
         self.end_jog()
         self.camera_views.clear()
         self.cure_label = None
@@ -1380,8 +1381,11 @@ class LotusUI(tk.Tk):
         for name, options in self.setting_choices().items():
             outer, panel = self.bordered(main)
             outer.pack(fill='both', expand=True, pady=4)
-            tk.Label(panel, text=name, bg=WHITE, fg=TEXT,
-                     font=(FONT, 10, 'bold')).pack(side='left', padx=18)
+            label=tk.Label(panel, text=name, bg=WHITE, fg=TEXT,
+                           font=(FONT,10,'bold'))
+            label.pack(side='left',padx=18)
+            for target in (outer,panel,label):
+                target.bind('<Button-1>',lambda event,key=name:self.open_setting_choices(key))
             variable = tk.StringVar(self, value=self.preferences[name])
             self.settings_variables[name] = variable
             tk.Button(panel, textvariable=variable,
@@ -1390,6 +1394,9 @@ class LotusUI(tk.Tk):
                       width=18, font=(FONT,11,'bold'), padx=12, pady=10).pack(side='right',padx=18)
         tk.Label(main, text='Battery: rough TalentCell PB120B1 voltage estimate. Select External / charging when plugged in.\nLoad and temperature affect the estimate; remaining runtime is not measured.',
                  bg=BG, fg=MUTED, font=(FONT, 8), justify='left', wraplength=650).pack(anchor='w')
+        self.settings_feedback_label=tk.Label(main,text='Tap a setting row or its value to change it.',
+            bg=BG,fg=PURPLE,font=(FONT,10),anchor='w',wraplength=700)
+        self.settings_feedback_label.pack(fill='x',pady=4)
         row = tk.Frame(main, bg=BG)
         row.pack(fill='x', pady=5)
         self.button(row, 'Swap Live X / Y Cameras', self.swap_cameras).pack(side='left')
@@ -1401,10 +1408,23 @@ class LotusUI(tk.Tk):
         for key, variable in getattr(self, 'settings_variables', {}).items():
             variable.set(self.preferences[key])
 
+    def settings_feedback(self,text):
+        label=getattr(self,'settings_feedback_label',None)
+        if label is not None and label.winfo_exists():label.config(text=text)
+
+    def close_setting_choices(self):
+        top=getattr(self,'settings_choice_window',None)
+        self.settings_choice_window=None
+        if top is not None and top.winfo_exists():
+            if top.grab_current()==top:top.grab_release()
+            top.destroy()
+
     def open_setting_choices(self, key):
-        previous = getattr(self, 'settings_choice_window', None)
-        if previous is not None and previous.winfo_exists():
-            previous.destroy()
+        previous=getattr(self,'settings_choice_window',None)
+        if previous is not None and previous.winfo_exists() and getattr(self,'settings_choice_key',None)==key:
+            previous.lift();previous.focus_set();return
+        self.close_setting_choices()
+        self.settings_choice_key=key
         top = tk.Toplevel(self)
         self.settings_choice_window = top
         top.title(key)
@@ -1419,15 +1439,23 @@ class LotusUI(tk.Tk):
                 if key == 'Fan speed' and getattr(self,'fan_request_inflight',False):
                     messagebox.showinfo('Fan setting','Wait for the current fan command to finish.',parent=top)
                     return
-                top.destroy()
+                self.close_setting_choices()
                 self.save_preference(key,choice)
                 self.sync_settings_values()
             caption=(f'{int(value.split()[0])//60} min' if int(value.split()[0])%60==0 else value) if key=='Cure duration' else value
             self.button(top,caption,select,primary=value==self.preferences[key]).grid(
                 row=1+i//columns,column=i%columns,sticky='ew',padx=8,pady=6)
         top.grid_columnconfigure(tuple(range(columns)),weight=1)
-        self.button(top,'Cancel',top.destroy).grid(
+        self.button(top,'Cancel',self.close_setting_choices).grid(
             row=1+(len(options)+columns-1)//columns,column=0,columnspan=columns,sticky='ew',padx=8,pady=10)
+        top.protocol('WM_DELETE_WINDOW',self.close_setting_choices)
+        top.bind('<Escape>',lambda event:self.close_setting_choices())
+        top.update_idletasks()
+        x=max(0,self.winfo_rootx()+(self.winfo_width()-top.winfo_reqwidth())//2)
+        y=max(0,self.winfo_rooty()+(self.winfo_height()-top.winfo_reqheight())//2)
+        top.geometry(f'+{x}+{y}')
+        top.wait_visibility()
+        top.grab_set();top.lift();top.focus_set()
 
     def save_preference(self, key, value):
         if key == 'Power source' and hasattr(self, '_battery_estimate'):
@@ -1444,6 +1472,7 @@ class LotusUI(tk.Tk):
             (self.data_dir / 'settings.json').write_text(json.dumps(self.preferences, indent=2))
         except OSError as exc:
             messagebox.showerror('Save failed', str(exc), parent=self)
+        self.settings_feedback(key+': '+value+' saved.')
         self.apply_hardware_preference(key, value)
 
     def apply_hardware_preference(self, key, value):
@@ -1453,12 +1482,10 @@ class LotusUI(tk.Tk):
             else:
                 self.send_hw('FAN ' + value.rstrip('%'), popup_on_fail=False)
         elif key == 'Camera lighting':
-            if value == 'Automatic':
-                self.send_hw('LIGHT 12.5', popup_on_fail=False)
-            elif value == 'Off':
-                self.send_hw('LIGHT 0', popup_on_fail=False)
-            else:
-                self.send_hw('LIGHT ' + value.rstrip('%'), popup_on_fail=False)
+            level='12.5' if value=='Automatic' else '0' if value=='Off' else value.rstrip('%')
+            sent=self.send_hw('LIGHT '+level,popup_on_fail=False)
+            self.settings_feedback('Camera lighting: '+value+(' command sent.' if sent else
+                ' saved, but no command sent — controller offline.'))
 
     def apply_all_hardware_preferences(self):
         for key in ('Fan speed', 'Camera lighting'):
@@ -3072,6 +3099,7 @@ class EngineeringLotusUI(LotusUI):
             except (ValueError,AttributeError):return
         if not self.hw.snapshot().get('connected'):
             self.fan_reply_text='No command sent: controller offline.'
+            self.settings_feedback('Fan speed unchanged — controller offline.')
             if hasattr(self,'fan_reply_label') and self.fan_reply_label.winfo_exists():
                 self.fan_reply_label.config(text=self.fan_reply_text)
             return
@@ -3079,6 +3107,7 @@ class EngineeringLotusUI(LotusUI):
         expected='OK FAN AUTO' if value=='Automatic' else 'OK FAN percent='+value.rstrip('%')
         self.fan_request_inflight=True
         self.fan_reply_text='Waiting for controller confirmation: '+command
+        self.settings_feedback(self.fan_reply_text)
         if hasattr(self,'fan_reply_label') and self.fan_reply_label.winfo_exists():
             self.fan_reply_label.config(text=self.fan_reply_text)
         self.log_hardware_event('TX '+command)
@@ -3105,6 +3134,7 @@ class EngineeringLotusUI(LotusUI):
             except OSError as exc:self.fan_reply_text+=' | Could not save preference: '+str(exc)
             self.hw.send('STATUS')
         self.sync_settings_values()
+        self.settings_feedback('Fan: '+self.fan_reply_text)
         self.log_hardware_event(('RX ' if ok else 'FAN ERROR ')+response)
         if hasattr(self,'fan_reply_label') and self.fan_reply_label.winfo_exists():
             self.fan_reply_label.config(text=self.fan_reply_text)
