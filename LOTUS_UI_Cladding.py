@@ -2540,10 +2540,16 @@ def fiber_alignment_status(measurements, criteria=None, now=None):
             per_view[name]='Misaligned'
         elif not finite_value(angle):per_view[name]='Alignment unverified'
         else:per_view[name]='Aligned'
-    if any(v=='Misaligned' for v in per_view.values()):
+    if any(v in ('Stale','Measurement unavailable') for v in per_view.values()):
+        label='Measurement unavailable'
+        reasons=[]
+        for name,state in per_view.items():
+            if state in ('Stale','Measurement unavailable'):
+                reason='Frame is stale; retry camera.' if state=='Stale' else measurements.get(name,{}).get('reason','Need a valid fiber detection.')
+                reasons.append(name.replace(' VIEW','')+': '+reason)
+        detail=' '.join(reasons)
+    elif any(v=='Misaligned' for v in per_view.values()):
         label='Misaligned';detail='Offset or angular tilt exceeds the configured tolerance.'
-    elif any(v in ('Stale','Measurement unavailable') for v in per_view.values()):
-        label='Measurement unavailable';detail='Both views need valid, recent measurements.'
     elif any(v=='Alignment unverified' for v in per_view.values()):
         label='Alignment unverified';detail='Angular tilt is unavailable for this detector.'
     else:
@@ -2579,7 +2585,14 @@ def fiber_alignment_status(measurements, criteria=None, now=None):
             label='Lateral position aligned — target gap unverified or outside tolerance'
         else:
             label='Position misaligned'
-        detail='Position-only mode: centerlines are compared at the gap midpoint. '+note.capitalize()+'. Translation cannot correct tilt; splice readiness is not established.'
+        offsets='; '.join(name.replace(' VIEW','')+f" {r['offset_px']:+.2f} px"+
+                          (' outside limit' if abs(r['offset_px'])>criteria['offset_px'] else ' within limit')
+                          for name,r in usable.items())
+        detail=f"Offset: {offsets}. Limit ±{criteria['offset_px']:g} px. "
+        if not offset_ok:detail+='Adjust lateral X/Y position; closing Z gap alone does not align centerlines. '
+        elif target is None:detail+='Set a target gap in View settings → Alignment criteria to check separation. '
+        elif not gap_ok:detail+='Target gap is unverified or outside tolerance. '
+        detail+=note.capitalize()+'. Geometry only; splice readiness is not established.'
         for name,r in usable.items():
             per_view[name]=('Position aligned' if abs(r['offset_px'])<=criteria['offset_px'] else 'Position misaligned')
     return {'label':label,'detail':detail,'views':per_view,'criteria':criteria}
@@ -2797,7 +2810,7 @@ def analyze_cladding(image, roi=None, polarity='Dark'):
         if start>0 and end<width and end-start<=2:active[start:end]=True
     splits=np.where(np.diff(np.r_[False,active,False].astype(int))!=0)[0]
     runs=[(int(start),int(end)) for start,end in zip(splits[::2],splits[1::2]) if end-start>=24]
-    if len(runs)!=2:return fail('Need two separated dark claddings; adjust ROI, focus, or cladding-width range.')
+    if len(runs)!=2:return fail('Need two separated claddings. Touching tips may merge; otherwise check ROI, focus and width range.')
     lines=[];residuals=[];points=[]
     for start,end in runs:
         columns=np.arange(start,end)
@@ -2837,7 +2850,7 @@ def analyze_cladding(image, roi=None, polarity='Dark'):
                   cleaves={'left':measure_cleave(left_tip['profile'],left),
                            'right':measure_cleave(right_tip['profile'],right)},
                   gap_definition='Axial separation of supported outward tip envelopes; not a 3D contact distance.')
-    if gap<4:return fail('Fiber-end gap below 4-pixel detection limit.')
+    if gap<4:return fail('Tips too close to measure: gap below 4 px. Separate slightly to inspect alignment; contact cannot be verified.')
     if left['x1']-left['x0']<24 or right['x1']-right['x0']<24:return fail('Insufficient visible fiber length.')
     if abs(left['diameter_px']-right['diameter_px'])>max(8,left['diameter_px']*.25):
         return fail('Inconsistent cladding diameters; inspect overlay.')
