@@ -1678,6 +1678,67 @@ class LotusUI(tk.Tk):
             self.cure_label.config(text='Stop requested')
         self.log_hardware_event('UV stopped')
 
+    @staticmethod
+    def power_keypad_edit(current,key,replace=False):
+        if key=='Clear':return ''
+        if key=='Backspace':return current[:-1]
+        if key not in '0123456789.' or len(key)!=1:return current
+        value='' if replace else current
+        if key=='.':return value if '.' in value else (value or '0')+'.'
+        return value+key
+
+    def open_power_keypad(self,variable,title):
+        previous=getattr(self,'power_keypad_window',None)
+        if previous is not None and previous.winfo_exists():
+            previous.lift();return
+        top=tk.Toplevel(self)
+        self.power_keypad_window=top
+        top.title(title);top.transient(self);top.configure(bg=BG)
+        top.resizable(False,False)
+        draft=tk.StringVar(top,value=variable.get())
+        replace=[True]
+        tk.Label(top,text=title,bg=BG,fg=PURPLE,font=(FONT,14,'bold')).grid(
+            row=0,column=0,columnspan=3,padx=16,pady=(12,4))
+        tk.Label(top,text='Enter measured power in mW',bg=BG,fg=MUTED,
+                 font=(FONT,10)).grid(row=1,column=0,columnspan=3,pady=(0,6))
+        tk.Entry(top,textvariable=draft,state='readonly',justify='right',
+                 readonlybackground=WHITE,fg=TEXT,font=(FONT,22),width=20).grid(
+            row=2,column=0,columnspan=3,sticky='ew',padx=12,pady=(0,8),ipady=8)
+        error=tk.StringVar(top)
+        def press(key):
+            draft.set(self.power_keypad_edit(draft.get(),key,replace[0]))
+            replace[0]=False;error.set('')
+        def done(event=None):
+            try:
+                value=float(draft.get())
+                if not math.isfinite(value) or value<=0:raise ValueError()
+            except (ValueError,OverflowError):
+                error.set('Enter a number greater than zero.')
+                return 'break'
+            variable.set(draft.get())
+            top.destroy()
+            return 'break'
+        keys=('7','8','9','4','5','6','1','2','3','.','0','Backspace')
+        for i,key in enumerate(keys):
+            tk.Button(top,text='⌫' if key=='Backspace' else key,
+                command=lambda k=key:press(k),bg=WHITE,fg=TEXT,
+                font=(FONT,18,'bold'),relief='flat',pady=8,width=6).grid(
+                    row=3+i//3,column=i%3,sticky='ew',padx=4,pady=3)
+        tk.Label(top,textvariable=error,bg=BG,fg=RED,font=(FONT,10)).grid(
+            row=7,column=0,columnspan=3,pady=3)
+        for column,(caption,command) in enumerate((('Clear',lambda:press('Clear')),
+                                                  ('Cancel',top.destroy),('Done',done))):
+            self.button(top,caption,command,primary=caption=='Done').grid(
+                row=8,column=column,sticky='ew',padx=4,pady=(3,10))
+        top.grid_columnconfigure((0,1,2),weight=1)
+        top.bind('<Return>',done)
+        top.bind('<Escape>',lambda event:top.destroy())
+        top.update_idletasks()
+        x=max(0,self.winfo_rootx()+(self.winfo_width()-top.winfo_reqwidth())//2)
+        y=max(0,self.winfo_rooty()+(self.winfo_height()-top.winfo_reqheight())//2)
+        top.geometry(f'+{x}+{y}')
+        top.grab_set();top.focus_set()
+
     def show_verification(self):
         main = self.page_shell('verification', 'Verification',
                                'Calculate optical insertion loss from measured input/output powers')
@@ -1697,8 +1758,15 @@ class LotusUI(tk.Tk):
             cell = tk.Frame(powers, bg=WHITE)
             cell.grid(row=0, column=column, padx=15)
             tk.Label(cell, text=label, bg=WHITE, fg=TEXT, font=(FONT, 10)).pack()
-            tk.Entry(cell, textvariable=variable, font=(FONT, 17), width=14,
-                     justify='center').pack(pady=(4, 0))
+            entry=tk.Entry(cell, textvariable=variable, font=(FONT, 17), width=14,
+                           justify='center')
+            entry.pack(pady=(4, 0),ipady=8)
+            def open_keypad(event=None,field=variable,title=label):
+                self.open_power_keypad(field,title)
+                return 'break'
+            entry.bind('<Button-1>',open_keypad)
+            entry.bind('<Return>',open_keypad)
+            self.button(cell,'Enter number',open_keypad).pack(pady=(5,0),fill='x')
 
         loss_text = tk.StringVar(value='— dB')
         detail_text = tk.StringVar(value='Waiting for measured optical powers.')
@@ -4057,5 +4125,6 @@ class EngineeringLotusUI(LotusUI):
 
 if __name__ == '__main__':
     EngineeringLotusUI().mainloop()
+
 
 
