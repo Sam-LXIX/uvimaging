@@ -1189,7 +1189,7 @@ class LotusUI(tk.Tk):
         actions.grid_columnconfigure((0,1,2,3),weight=1,uniform='alignment_actions')
         for col,(text,callback,primary,green) in enumerate([
                 ('STOP',self.emergency_stop,False,False),
-                ('Auto XYZ',self.auto_align_unavailable,True,False),
+                ('XYZ: Coming Soon',self.auto_align_unavailable,False,False),
                 ('Motor settings',self.alignment_motor_settings,False,False),
                 ('Apply Epoxy →',self.show_epoxy,False,True)]):
             self.button(actions,text,callback,primary=primary,green=green).grid(row=0,column=col,sticky='ew',padx=3)
@@ -1361,10 +1361,14 @@ class LotusUI(tk.Tk):
         self.log_hardware_event('EMERGENCY STOP')
 
     def auto_align_unavailable(self):
+        self.show_construction_notice()
+
+    def show_construction_notice(self):
         messagebox.showinfo(
-            'Auto Align',
-            'Motor control is connected, but automatic alignment still needs the '
-            'camera measurement algorithm to calculate live X/Y/Z corrections.',
+            'Under Construction',
+            'Still in the lab! The fibers have requested more testing.\n\n'
+            'Calibration and Auto XYZ are under construction.\n'
+            'Use the manual X / Y / Z controls for positioning.',
             parent=self,
         )
 
@@ -2943,7 +2947,7 @@ class EngineeringLotusUI(LotusUI):
         self.auto_xy_active=False
         self.auto_xy_pending=None
         self.auto_xy_label=None
-        self.auto_xy_message='Auto XYZ: calibrate measured motor response before use. Position-only XYZ targets centerline offset and a visible gap; angular tilt is reported separately.'
+        self.auto_xy_message='Calibration & Auto XYZ: under construction. Still in the lab! Use manual X / Y / Z controls.'
         self.auto_xy_model={}
         self.auto_xy_baseline=None
         self.auto_xy_calibration_gate=None
@@ -3360,7 +3364,7 @@ class EngineeringLotusUI(LotusUI):
         auto_row.grid_columnconfigure((0,1,2,3),weight=1,uniform='combined_actions')
         for col,(text,callback,primary,green) in enumerate([
                 ('STOP',self.emergency_stop,False,False),
-                ('Auto XYZ',self.auto_xy_start,True,False),
+                ('XYZ: Coming Soon',self.show_construction_notice,False,False),
                 ('Motor settings',self.alignment_motor_settings,False,False),
                 ('Apply Epoxy →',self.show_epoxy,False,True)]):
             self.button(auto_row,text,callback,primary=primary,green=green).grid(
@@ -3398,22 +3402,21 @@ class EngineeringLotusUI(LotusUI):
             canvas.pack(fill='both',expand=True)
             self.engineering_widgets[name]=(canvas,label)
         tk.Label(tools,text='Motor calibration',bg=BG,fg=PURPLE,font=(FONT,13,'bold')).pack(anchor='w',pady=8)
-        tk.Label(tools,text='Use Manual Control to command a known pulse count. Measure displacement in a calibrated view.\n'
-                 'Record signed displacement and actual pulse count below. No motion is issued by this tool.\n'
-                 'Repeat in both directions to characterize backlash. Calibration is stored as an operator measurement.',
+        tk.Label(tools,text='Calibration & Auto XYZ are under construction. Still in the lab!\n'
+                 'Use the manual X / Y / Z controls to position the fibers while watching the cameras.',
                  bg=BG,fg=TEXT,justify='left',wraplength=650).pack(anchor='w')
         self.motor_summary=tk.Label(tools,text=self.motor_summary_text(),bg=BG,fg=TEXT,justify='left')
         self.motor_summary.pack(anchor='w',pady=10)
-        self.button(tools,'Calibrate XYZ response',self.auto_xy_calibrate,primary=True).pack(anchor='w',pady=5)
-        self.button(tools,'Record motor calibration',self.record_motor_calibration,primary=True).pack(anchor='w')
+        self.button(tools,'Calibration: Coming Soon',self.show_construction_notice).pack(anchor='w',pady=5)
+        self.button(tools,'Motor calibration: Coming Soon',self.show_construction_notice).pack(anchor='w')
         tk.Label(tools,text='Session reports contain timestamped telemetry, measurement history, camera calibration,\n'
                  'motor calibration, settings, and the latest analyzed raw/overlay images.\n'
                  'Measurement history is bounded to 7,200 entries and telemetry to 3,600 entries.',
                  bg=BG,fg=TEXT,justify='left',wraplength=650).pack(anchor='w',pady=15)
         self.button(tools,'Export session ZIP',self.export_session,primary=True).pack(anchor='w')
         self.button(tools,'Start new session',self.new_session).pack(anchor='w',pady=8)
-        tk.Label(tools,text='Auto XYZ uses measured motor response and bounded camera feedback. Position-only XYZ targets centerline offset and a visible gap; angular tilt is reported separately.\n'
-                 'Recalibrate after changing optics, mounting, ROI, detector settings or camera assignments.',bg=BG,fg=MUTED,justify='left').pack(anchor='w',pady=8)
+        tk.Label(tools,text='Automatic positioning is under construction. Manual positioning and session reports are available.',
+                 bg=BG,fg=MUTED,justify='left').pack(anchor='w',pady=8)
         self.plot_key=tk.StringVar(value='pcb')
         ttk.Combobox(telemetry,textvariable=self.plot_key,state='readonly',
                      values=('pcb','ambient','humidity','voltage','current','fanrpm')).pack(anchor='w',padx=8,pady=8)
@@ -3805,9 +3808,7 @@ class EngineeringLotusUI(LotusUI):
         self.auto_xy_pending=None
 
     def auto_align_unavailable(self):
-        # The existing Alignment page button opens the calibrated feedback controls.
-        self.show_engineering()
-        self.auto_xy_set_text('Use Calibrate XYZ first, then Start auto XYZ. Set a target gap in Alignment criteria. Position-only mode allows remaining tilt.')
+        self.show_construction_notice()
 
     def auto_xy_calibrate(self):
         self.auto_xy_stop('Stopped for calibration');self.end_jog()
