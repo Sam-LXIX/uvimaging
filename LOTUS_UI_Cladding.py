@@ -618,9 +618,11 @@ class LotusUI(tk.Tk):
         self.jog_repeated = False
 
         self.protocol('WM_DELETE_WINDOW', self.close_app)
-        self.bind('<F11>', lambda e: self.attributes('-fullscreen',
-                                                    not self.attributes('-fullscreen')))
-        self.bind('<Escape>', lambda e: self.attributes('-fullscreen', False))
+        self.startup_fullscreen_pending=os.environ.get('LOTUS_WINDOWED','0')!='1'
+        self.startup_fullscreen_scheduled=False
+        self.bind('<F11>',self.toggle_fullscreen)
+        self.bind('<Escape>',lambda event:self.set_fullscreen(False))
+        self.bind('<Map>',self.startup_window_mapped,add='+')
 
         self.build_topbar()
         self.build_statusbar()
@@ -634,6 +636,30 @@ class LotusUI(tk.Tk):
     # ------------------------------------------------------------------
     # Common UI
     # ------------------------------------------------------------------
+    def set_fullscreen(self,enabled):
+        # Explicit operator actions cancel startup retries, including Escape.
+        self.startup_fullscreen_pending=False
+        self.attributes('-fullscreen',bool(enabled))
+        return 'break'
+
+    def toggle_fullscreen(self,event=None):
+        return self.set_fullscreen(not bool(self.attributes('-fullscreen')))
+
+    def startup_window_mapped(self,event):
+        if event.widget is not self or self.startup_fullscreen_scheduled:return
+        self.startup_fullscreen_scheduled=True
+        if not self.startup_fullscreen_pending:return
+        # labwc/XWayland may overwrite geometry during the initial map.
+        # Retry briefly after mapping, never continuously or after user exit.
+        self.after_idle(self.apply_startup_fullscreen)
+        self.after(350,self.apply_startup_fullscreen)
+        self.after(1200,self.apply_startup_fullscreen)
+        self.after(1500,lambda:setattr(self,'startup_fullscreen_pending',False))
+
+    def apply_startup_fullscreen(self):
+        if self.startup_fullscreen_pending and not self.closing:
+            self.attributes('-fullscreen',True)
+
     def build_topbar(self):
         bar = tk.Frame(self, bg=WHITE, height=72)
         bar.pack(fill='x')
@@ -645,6 +671,7 @@ class LotusUI(tk.Tk):
                                      font=(FONT, 11, 'bold'), padx=14, pady=12)
         self.menu_button.pack(side='left', padx=(8, 0))
         brand = tk.Frame(bar, bg=WHITE)
+        self.brand_frame=brand
         brand.pack(side='left', padx=20, pady=9)
         from PIL import Image, ImageTk
         import base64, io
@@ -723,6 +750,9 @@ class LotusUI(tk.Tk):
         self.end_jog()
         self.camera_views.clear()
         self.cure_label = None
+        self.sidebar_frame=None
+        self.page_main=None
+        self.menu_button.pack_forget()
         for widget in self.content.winfo_children():
             widget.destroy()
 
@@ -776,7 +806,9 @@ class LotusUI(tk.Tk):
         nav = getattr(self, 'sidebar_frame', None)
         main = getattr(self, 'page_main', None)
         if nav is None or main is None or not nav.winfo_exists() or not main.winfo_exists():
+            self.menu_button.pack_forget()
             return
+        self.menu_button.pack(side='left',padx=(8,0),before=self.brand_frame)
         if self.sidebar_visible:
             nav.pack(side='left', fill='y', padx=(14, 10), pady=12, before=main)
         else:
