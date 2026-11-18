@@ -6,7 +6,7 @@ import unittest
 
 source=(Path(__file__).resolve().parents[1]/'LOTUS_UI_Cladding.py').read_text()
 cls=next(n for n in ast.parse(source).body if isinstance(n,ast.ClassDef) and n.name=='LotusUI')
-names={'set_fullscreen','toggle_fullscreen','startup_window_mapped','apply_startup_fullscreen','apply_sidebar_visibility'}
+names={'set_fullscreen','toggle_fullscreen','startup_window_mapped','apply_startup_fullscreen','apply_sidebar_visibility','finish_startup_splash'}
 cls.body=[n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name in names]
 cls.bases=[]
 ns={}
@@ -56,6 +56,25 @@ class StartupLayoutTests(unittest.TestCase):
         ui=self.ui();ui.startup_fullscreen_pending=False
         ui.startup_window_mapped(SimpleNamespace(widget=ui))
         self.assertFalse(ui.scheduled)
+
+    def test_splash_transitions_once_even_in_windowed_mode(self):
+        ui=self.ui();ui.startup_fullscreen_pending=False
+        destroyed=[];ui.startup_logo=object()
+        ui.startup_splash=SimpleNamespace(destroy=lambda:destroyed.append(True))
+        timers=[];ui.after=lambda delay,callback:timers.append((delay,callback))
+        ui.startup_window_mapped(SimpleNamespace(widget=ui))
+        ui.startup_window_mapped(SimpleNamespace(widget=ui))
+        self.assertEqual(len(timers),1)
+        self.assertEqual(timers[0][0],2500)
+        timers[0][1]();ui.finish_startup_splash()
+        self.assertEqual(destroyed,[True])
+        self.assertIsNone(ui.startup_splash)
+        self.assertIsNone(ui.startup_logo)
+
+    def test_closing_during_splash_does_not_touch_destroyed_widgets(self):
+        ui=self.ui();ui.closing=True
+        ui.startup_splash=SimpleNamespace(destroy=lambda:self.fail('Closing UI must not transition'))
+        ui.finish_startup_splash()
 
     def test_menu_hidden_without_sidebar_and_restored_on_other_pages(self):
         ui=self.ui();ui.sidebar_frame=None;ui.page_main=None

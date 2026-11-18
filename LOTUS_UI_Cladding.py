@@ -630,12 +630,40 @@ class LotusUI(tk.Tk):
         self.content.pack(fill='both', expand=True)
         self.content.pack_propagate(False)
         self.show_home()
+        self.show_startup_splash()
         self.tick()
         self.after(100, self.update_camera_views)
 
     # ------------------------------------------------------------------
     # Common UI
     # ------------------------------------------------------------------
+    def show_startup_splash(self):
+        """Cover Home until the logo has been visible for 2.5 seconds."""
+        from PIL import Image, ImageTk
+        import base64, io
+        self.startup_splash=tk.Frame(self,bg=WHITE)
+        self.startup_splash.place(x=0,y=0,relwidth=1,relheight=1)
+        self.startup_splash.lift()
+        center=tk.Frame(self.startup_splash,bg=WHITE)
+        center.place(relx=0.5,rely=0.5,anchor='center')
+        with Image.open(io.BytesIO(base64.b64decode(LOTUS_LOGO_B64))) as original:
+            image=original.convert('RGB')
+            image.thumbnail((300,220),Image.Resampling.LANCZOS)
+        self.startup_logo=ImageTk.PhotoImage(image,master=self)
+        tk.Label(center,image=self.startup_logo,bg=WHITE).pack(pady=(0,24))
+        tk.Label(center,text='UV-CURED EPOXY FIBER SPLICER',bg=WHITE,fg=TEXT,
+                 font=(FONT,16,'bold')).pack()
+        tk.Label(center,text='Starting LOTUS…',bg=WHITE,fg=PURPLE,
+                 font=(FONT,12)).pack(pady=(14,0))
+
+    def finish_startup_splash(self):
+        if self.closing:return
+        splash=getattr(self,'startup_splash',None)
+        if splash is None:return
+        splash.destroy()
+        self.startup_splash=None
+        self.startup_logo=None
+
     def set_fullscreen(self,enabled):
         # Explicit operator actions cancel startup retries, including Escape.
         self.startup_fullscreen_pending=False
@@ -648,6 +676,8 @@ class LotusUI(tk.Tk):
     def startup_window_mapped(self,event):
         if event.widget is not self or self.startup_fullscreen_scheduled:return
         self.startup_fullscreen_scheduled=True
+        if getattr(self,'startup_splash',None) is not None:
+            self.after(2500,self.finish_startup_splash)
         if not self.startup_fullscreen_pending:return
         # labwc/XWayland may overwrite geometry during the initial map.
         # Retry briefly after mapping, never continuously or after user exit.
