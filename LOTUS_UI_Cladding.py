@@ -3392,10 +3392,14 @@ class EngineeringLotusUI(LotusUI):
         notebook.add(telemetry,text='Telemetry')
         vision.grid_columnconfigure(0,weight=1)
         vision.grid_rowconfigure(1,weight=1)
-        status_row=tk.Frame(vision,bg=BG);status_row.grid(row=0,column=0,sticky='ew',padx=4,pady=2)
+        status_row=tk.Frame(vision,bg=BG,height=60)
+        status_row.grid(row=0,column=0,sticky='ew',padx=4,pady=2)
+        status_row.pack_propagate(False)
         self.alignment_status_label=tk.Label(status_row,text='Measurement unavailable',bg=BG,fg=PURPLE,
-                                             font=(FONT,9,'bold'),anchor='w',wraplength=650)
+                                             font=(FONT,9,'bold'),anchor='w',justify='left',width=1,height=3,wraplength=650)
         self.alignment_status_label.pack(side='left',fill='x',expand=True)
+        self.alignment_status_label.bind('<Configure>',lambda event:
+            event.widget.config(wraplength=max(80,event.width-8)))
         self.camera_focus_button=tk.Button(status_row,text='Details',command=self.toggle_camera_focus,
             bg=PLIGHT,fg=PURPLE,font=(FONT,10,'bold'),padx=12,pady=8,relief='flat')
         self.camera_focus_button.pack(side='right',padx=3)
@@ -3639,16 +3643,25 @@ class EngineeringLotusUI(LotusUI):
             image=self.measurement_sources.get(name)
             stale=result.get('source')=='live' and time.monotonic()-(result.get('source_stamp') or 0)>2
             preview_only=False
-            # Show camera output even while analysis is pending, stale or unavailable.
-            if name not in self.analysis_samples and (image is None or stale):
-                live, camera_status=self.feeds.snapshot(self.camera_order[name])
-                if live is not None:
+            preview_stamp=None
+            # Live preview follows capture, not the slower alternating analysis worker.
+            # Overlays/masks retain their analyzed image so geometry is never drawn
+            # onto a newer frame with potentially different fiber positions.
+            if name not in self.analysis_samples and not self.mask_views.get(name,False):
+                live,preview_stamp,camera_status=self.feeds.analysis_snapshot(self.camera_order[name])
+                if live is not None and preview_stamp is not None and 0<=time.monotonic()-preview_stamp<=2:
                     image=orient_camera_frame(live,name)
                     preview_only=True
+                else:
+                    image=None
+                    if live is not None:camera_status='Waiting for a recent camera frame'
+            elif name not in self.analysis_samples and (image is None or stale):
+                image=None
+                camera_status='Waiting for a recent analyzed frame'
             else:
                 camera_status='Waiting for image'
             if image is not None:
-                render_key=(id(image),result.get('measured_at'),stale,canvas.winfo_width(),canvas.winfo_height(),self.mask_views.get(name,False))
+                render_key=(preview_stamp if preview_only else id(image),preview_only,result.get('measured_at'),stale,canvas.winfo_width(),canvas.winfo_height(),self.mask_views.get(name,False))
                 if getattr(canvas,'render_key',None)!=render_key:
                     canvas.render_key=render_key
                     mask=self.analysis_masks.get(name)
