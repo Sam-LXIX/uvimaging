@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 COMPARISON_METHOD = 'Cladding'
-COMPARISON_TITLE = 'Version A — Cladding detector'
+COMPARISON_TITLE = 'Fiber Splicer Control'
 VISION_SETTINGS_FILE = 'vision_compare_cladding.json'
 
 HOLDER_LAYOUT = {'X':'left','Y':'right','Z':'right'}
@@ -509,19 +509,19 @@ class ESP32Link:
 # Same visual language as the existing midterm-demo interface.
 # =============================================================================
 W, H = 1024, 600
-BG = "#F5F6FA"
+BG = "#F4F5F9"
 WHITE = "#FFFFFF"
 TEXT = "#17171C"
 MUTED = "#667085"
 PURPLE = "#6D28D9"
-PURPLE2 = "#7C3AED"
+PURPLE2 = "#5B21B6"
 PLIGHT = "#EDE9FE"
 PBORDER = "#C4B5FD"
 BORDER = "#D9DCE6"
-GREEN = "#22C55E"
+GREEN = "#15803D"
 GREENBG = "#EAF8EF"
-YELLOW = "#F59E0B"
-RED = "#EF4444"
+YELLOW = "#B45309"
+RED = "#B91C1C"
 BLACK = "#000000"
 FONT = "DejaVu Sans"
 
@@ -548,10 +548,18 @@ def optical_transmission_percent(pf1_mw, pf2_mw):
 class LotusUI(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.wm_title("LOTUS UV-Cured Epoxy Fiber Splicer | Dual Camera v2026.10.30")
+        self.wm_title("LOTUS | Fiber Splicer Control")
         self.geometry(f"{W}x{H}")
         self.minsize(900, 520)
         self.configure(bg=BG)
+        from tkinter import ttk
+        style=ttk.Style(self)
+        style.theme_use('clam')
+        style.configure('TNotebook',background=BG,borderwidth=0)
+        style.configure('TNotebook.Tab',font=(FONT,9,'bold'),padding=(12,7),
+                        background=WHITE,foreground=MUTED)
+        style.map('TNotebook.Tab',background=[('selected',PLIGHT)],
+                  foreground=[('selected',PURPLE)])
 
         self.data_dir = Path.home() / '.lotus_ui'
         self.preferences = {
@@ -695,8 +703,8 @@ class LotusUI(tk.Tk):
         bar.pack(fill='x')
         bar.pack_propagate(False)
 
-        self.sidebar_visible = True
-        self.menu_button = tk.Button(bar, text='Hide menu', command=self.toggle_sidebar,
+        self.sidebar_visible = False
+        self.menu_button = tk.Button(bar, text='Menu', command=self.toggle_sidebar,
                                      bg=PLIGHT, fg=PURPLE, relief='flat',
                                      font=(FONT, 11, 'bold'), padx=14, pady=12)
         self.menu_button.pack(side='left', padx=(8, 0))
@@ -787,7 +795,7 @@ class LotusUI(tk.Tk):
             widget.destroy()
 
     def page_heading(self, parent, heading, subtitle=''):
-        tk.Label(parent, text=heading, font=(FONT, 20, 'bold'),
+        tk.Label(parent, text=heading, font=(FONT, 18, 'bold'),
                  fg=TEXT, bg=BG).pack(anchor='w')
         if subtitle:
             tk.Label(parent, text=subtitle, font=(FONT, 9), fg=MUTED,
@@ -853,15 +861,16 @@ class LotusUI(tk.Tk):
         inner.pack(fill='both', expand=True, padx=1, pady=1)
         return outer, inner
 
-    def button(self, parent, text, command, primary=False, green=False):
-        bg = GREEN if green else (PURPLE2 if primary else WHITE)
-        fg = 'white' if primary or green else TEXT
-        border = PURPLE2 if primary else (GREEN if green else PBORDER)
+    def button(self, parent, text, command, primary=False, green=False, danger=False):
+        bg = RED if danger else (GREEN if green else (PURPLE2 if primary else WHITE))
+        fg = 'white' if primary or green or danger else TEXT
+        border = RED if danger else (PURPLE2 if primary else (GREEN if green else BORDER))
         outer = tk.Frame(parent, bg=border)
         tk.Button(outer, text=text, command=command, bg=bg, fg=fg,
-                  activebackground=PURPLE if primary else PLIGHT,
-                  activeforeground='white' if primary else TEXT,
+                  activebackground='#991B1B' if danger else (GREEN if green else (PURPLE if primary else PLIGHT)),
+                  activeforeground=fg,
                   relief='flat', bd=0, font=(FONT, 10, 'bold'),
+                  highlightthickness=1,highlightbackground=bg,highlightcolor=PURPLE,
                   padx=13, pady=8).pack(fill='both', expand=True, padx=1, pady=1)
         return outer
 
@@ -885,7 +894,7 @@ class LotusUI(tk.Tk):
         self.clear()
         main = tk.Frame(self.content, bg=BG)
         main.pack(fill='both', expand=True, padx=22, pady=14)
-        self.page_heading(main, 'LOTUS Control', 'UV-cured epoxy fiber splicer')
+        self.page_heading(main, 'Splice Workstation', 'Inspect fibers  •  Position stages  •  Cure epoxy  •  Verify loss')
 
         state = self.hw.snapshot()
         connected = bool(state.get('connected'))
@@ -960,9 +969,12 @@ class LotusUI(tk.Tk):
 
         def resize(event):
             width, height = event.width, event.height
+            text_width=max(40,int(width*.68)-12)
+            tile.itemconfig(title_id,width=text_width,font=(FONT,12 if width<410 else 13,'bold'))
+            tile.itemconfig(desc_id,width=text_width)
             tile.coords(icon_id, .12 * width, .5 * height)
-            tile.coords(title_id, .27 * width, .42 * height)
-            tile.coords(desc_id, .27 * width, .62 * height)
+            tile.coords(title_id, .27 * width, .36 * height)
+            tile.coords(desc_id, .27 * width, .68 * height)
             tile.coords(focus_id, 4, 4, width - 4, height - 4)
 
         tile.bind('<Configure>', resize)
@@ -1646,8 +1658,8 @@ class LotusUI(tk.Tk):
     # Guided splice / UV / verification / logs
     # ------------------------------------------------------------------
     def show_splice(self):
-        main = self.page_shell('alignment', 'Start Splice',
-                               'Follow the midterm demo splicing procedure')
+        main = self.page_shell('alignment', 'Splice Workflow',
+                               'Load fibers, align manually, apply epoxy, cure, and verify.')
         steps = [
             ('Load Fibers', 'Secure both fibers in their holders.', self.show_load),
             ('Align Fibers', 'Inspect the X and Y views.', self.show_alignment),
@@ -1712,7 +1724,7 @@ class LotusUI(tk.Tk):
                       'the cure and shuts UV off automatically.',
                  bg=WHITE, fg=MUTED, font=(FONT, 8), wraplength=600).pack(pady=8)
         self.button(panel, 'Start UV Cure', self.start_cure, primary=True).pack(pady=10)
-        self.button(panel, 'Stop UV', self.stop_cure).pack(pady=5)
+        self.button(panel, 'Stop UV', self.stop_cure,danger=True).pack(pady=5)
         self.button(panel, 'Continue to Verification →', self.show_verification).pack(pady=10)
 
     def cure_timer_text(self,state):
@@ -3124,7 +3136,7 @@ class EngineeringLotusUI(LotusUI):
         super().clear()
 
     def show_fan(self):
-        main=self.page_shell('fan','Fan Control','IO21 PWM at 25 kHz • IO40 tachometer • 2 pulses/revolution')
+        main=self.page_shell('fan','Fan Control','Monitor fan speed and select automatic or manual cooling.')
         self.fan_controls=[]
         self.fan_status_label=tk.Label(main,text='',bg=WHITE,fg=PURPLE,
                                       font=(FONT,13,'bold'),justify='left',padx=15,pady=12)
@@ -3338,7 +3350,7 @@ class EngineeringLotusUI(LotusUI):
         self.show_engineering()
 
     def show_engineering(self):
-        main=self.page_shell('alignment','Alignment & Engineering')
+        main=self.page_shell('alignment','Fiber Alignment')
         self.analysis_samples.clear()
         self.camera_images.clear()
         self.invalidate_analysis()
@@ -3347,8 +3359,8 @@ class EngineeringLotusUI(LotusUI):
         vision=tk.Frame(notebook,bg=BG)
         tools=tk.Frame(notebook,bg=BG)
         telemetry=tk.Frame(notebook,bg=BG)
-        notebook.add(vision,text='Cameras & Alignment')
-        notebook.add(tools,text='Motor Calibration & Reports')
+        notebook.add(vision,text='Live Alignment')
+        notebook.add(tools,text='Session Reports')
         notebook.add(telemetry,text='Telemetry')
         vision.grid_columnconfigure(0,weight=1)
         vision.grid_rowconfigure(1,weight=1)
@@ -3359,7 +3371,6 @@ class EngineeringLotusUI(LotusUI):
         self.camera_focus_button=tk.Button(status_row,text='Details',command=self.toggle_camera_focus,
             bg=PLIGHT,fg=PURPLE,font=(FONT,10,'bold'),padx=12,pady=8,relief='flat')
         self.camera_focus_button.pack(side='right',padx=3)
-        self.button(status_row,'STOP',self.emergency_stop).pack(side='right',padx=3)
         auto_row=tk.Frame(vision,bg=BG);auto_row.grid(row=4,column=0,sticky='ew',padx=4,pady=3)
         auto_row.grid_columnconfigure((0,1,2,3),weight=1,uniform='combined_actions')
         for col,(text,callback,primary,green) in enumerate([
@@ -3367,7 +3378,7 @@ class EngineeringLotusUI(LotusUI):
                 ('XYZ: Coming Soon',self.show_construction_notice,False,False),
                 ('Motor settings',self.alignment_motor_settings,False,False),
                 ('Apply Epoxy →',self.show_epoxy,False,True)]):
-            self.button(auto_row,text,callback,primary=primary,green=green).grid(
+            self.button(auto_row,text,callback,primary=primary,green=green,danger=text=='STOP').grid(
                 row=0,column=col,sticky='ew',padx=3)
         controls=tk.Frame(vision,bg=WHITE)
         controls.grid(row=3,column=0,sticky='ew',padx=4,pady=2)
@@ -3376,7 +3387,7 @@ class EngineeringLotusUI(LotusUI):
             row=tk.Frame(controls,bg=WHITE)
             row.grid(row=0,column=col,sticky='ew',padx=3)
             row.grid_columnconfigure((1,2),weight=1)
-            tk.Label(row,text=axis,bg=WHITE,fg=TEXT,font=(FONT,10,'bold')).grid(row=0,column=0,padx=4)
+            tk.Label(row,text=axis+' · '+HOLDER_LAYOUT[axis].upper(),bg=WHITE,fg=TEXT,font=(FONT,9,'bold')).grid(row=0,column=0,padx=4)
             self.jog_button(row,minus,axis,-1,width=2,font_size=13).grid(row=0,column=1,sticky='ew',padx=3,pady=2)
             self.jog_button(row,plus,axis,1,width=2,font_size=13).grid(row=0,column=2,sticky='ew',padx=3,pady=2)
         notebook.bind('<<NotebookTabChanged>>',lambda event:self.pause_alignment_tab())
@@ -3401,7 +3412,7 @@ class EngineeringLotusUI(LotusUI):
             canvas=tk.Canvas(box,bg=BLACK,width=1,height=1,highlightthickness=0)
             canvas.pack(fill='both',expand=True)
             self.engineering_widgets[name]=(canvas,label)
-        tk.Label(tools,text='Motor calibration',bg=BG,fg=PURPLE,font=(FONT,13,'bold')).pack(anchor='w',pady=8)
+        tk.Label(tools,text='Development Features',bg=BG,fg=PURPLE,font=(FONT,13,'bold')).pack(anchor='w',pady=8)
         tk.Label(tools,text='Calibration & Auto XYZ are under construction. Still in the lab!\n'
                  'Use the manual X / Y / Z controls to position the fibers while watching the cameras.',
                  bg=BG,fg=TEXT,justify='left',wraplength=650).pack(anchor='w')
@@ -3409,9 +3420,8 @@ class EngineeringLotusUI(LotusUI):
         self.motor_summary.pack(anchor='w',pady=10)
         self.button(tools,'Calibration: Coming Soon',self.show_construction_notice).pack(anchor='w',pady=5)
         self.button(tools,'Motor calibration: Coming Soon',self.show_construction_notice).pack(anchor='w')
-        tk.Label(tools,text='Session reports contain timestamped telemetry, measurement history, camera calibration,\n'
-                 'motor calibration, settings, and the latest analyzed raw/overlay images.\n'
-                 'Measurement history is bounded to 7,200 entries and telemetry to 3,600 entries.',
+        tk.Label(tools,text='Session reports include timestamped readings, measurement history, settings,\n'
+                 'and the latest source images and measurement overlays.',
                  bg=BG,fg=TEXT,justify='left',wraplength=650).pack(anchor='w',pady=15)
         self.button(tools,'Export session ZIP',self.export_session,primary=True).pack(anchor='w')
         self.button(tools,'Start new session',self.new_session).pack(anchor='w',pady=8)
