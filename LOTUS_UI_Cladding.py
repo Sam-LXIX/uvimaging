@@ -1459,7 +1459,7 @@ class LotusUI(tk.Tk):
         for name, options in self.setting_choices().items():
             outer, panel = self.bordered(main)
             outer.pack(fill='both', expand=True, pady=4)
-            label=tk.Label(panel, text=name, bg=WHITE, fg=TEXT,
+            label=tk.Label(panel, text='Fan control' if name=='Fan speed' else name, bg=WHITE, fg=TEXT,
                            font=(FONT,10,'bold'))
             label.pack(side='left',padx=18)
             for target in (outer,panel,label):
@@ -3114,7 +3114,7 @@ class EngineeringLotusUI(LotusUI):
         self.sidebar_frame = nav
         items=[('Home',self.show_home,'home'),('Live View',self.show_live,'live'),
                ('Alignment',self.show_alignment,'alignment'),
-               ('UV Cure',self.show_cure,'cure'),('Fan Control',self.show_fan,'fan'),
+               ('UV Cure',self.show_cure,'cure'),
                ('Verification',self.show_verification,'verification'),
                ('Manual Control',self.show_manual,'manual'),('Logs',self.show_logs,'logs'),
                ('Settings',self.show_settings,'settings'),
@@ -3135,8 +3135,26 @@ class EngineeringLotusUI(LotusUI):
         self.alignment_status_label=None
         super().clear()
 
+    def open_setting_choices(self,key):
+        if key=='Fan speed':
+            self.show_fan()
+        else:
+            super().open_setting_choices(key)
+
     def show_fan(self):
-        main=self.page_shell('fan','Fan Control','Monitor fan speed and select automatic or manual cooling.')
+        previous=getattr(self,'settings_choice_window',None)
+        if previous is not None and previous.winfo_exists() and getattr(self,'settings_choice_key',None)=='Fan speed':
+            previous.lift();previous.focus_set();return
+        self.close_setting_choices()
+        self.settings_choice_key='Fan speed'
+        top=tk.Toplevel(self)
+        self.settings_choice_window=top
+        top.title('Settings | Fan Control')
+        top.transient(self)
+        top.configure(bg=BG)
+        main=tk.Frame(top,bg=BG)
+        main.pack(fill='both',expand=True,padx=18,pady=12)
+        self.page_heading(main,'Fan Control','Automatic cooling or manual speed adjustment')
         self.fan_controls=[]
         self.fan_status_label=tk.Label(main,text='',bg=WHITE,fg=PURPLE,
                                       font=(FONT,13,'bold'),justify='left',padx=15,pady=12)
@@ -3145,7 +3163,8 @@ class EngineeringLotusUI(LotusUI):
         for percent in (0,25,50,75,100):
             b=self.button(row,str(percent)+'%',lambda p=percent:self.request_fan(str(p)+'%'),primary=True)
             b.pack(side='left',padx=4);self.fan_controls.append(b.winfo_children()[0])
-        self.fan_slider=tk.IntVar(value=50)
+        state=self.hw.snapshot()
+        self.fan_slider=tk.IntVar(value=max(0,min(100,int(state.get('fanpct',50)))))
         tk.Scale(main,from_=0,to=100,orient='horizontal',variable=self.fan_slider,
                  resolution=1,label='Requested PWM duty (%)',bg=BG,fg=TEXT,
                  highlightthickness=0).pack(fill='x',pady=4)
@@ -3161,6 +3180,15 @@ class EngineeringLotusUI(LotusUI):
                  'Automatic uses the PCB temperature sensor; missing temperature requests 100%.\n'
                  'Controller link timeout returns the fan to automatic/full-speed fallback.',
                  bg=BG,fg=MUTED,justify='left',wraplength=650).pack(anchor='w')
+        self.button(main,'Done',self.close_setting_choices).pack(anchor='e',pady=(12,0))
+        top.protocol('WM_DELETE_WINDOW',self.close_setting_choices)
+        top.bind('<Escape>',lambda event:self.close_setting_choices())
+        top.update_idletasks()
+        x=max(0,self.winfo_rootx()+(self.winfo_width()-top.winfo_reqwidth())//2)
+        y=max(0,self.winfo_rooty()+(self.winfo_height()-top.winfo_reqheight())//2)
+        top.geometry(f'+{x}+{y}')
+        top.wait_visibility()
+        top.grab_set();top.lift();top.focus_set()
         self.refresh_fan_status()
 
     def refresh_fan_status(self):
