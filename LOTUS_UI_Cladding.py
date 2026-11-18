@@ -1025,6 +1025,8 @@ class LotusUI(tk.Tk):
         head.pack_propagate(False)
         tk.Label(head, text=name, bg=WHITE, fg=PURPLE,
                  font=(FONT, 10, 'bold')).pack(side='left', padx=10)
+        if hasattr(self,'outline_button'):
+            self.outline_button(head,name).pack(side='left',padx=3)
         tk.Button(head, text='Load Sample', command=lambda: self.load_sample(name),
                   bg=WHITE, fg=PURPLE, relief='flat', font=(FONT, 8)).pack(side='right', padx=8)
         tk.Button(head, text='Live / Retry', command=lambda: self.resume_camera(name),
@@ -1052,9 +1054,11 @@ class LotusUI(tk.Tk):
             elif frame is not None:
                 from PIL import Image, ImageTk
                 preview = orient_camera_frame(frame, name)
+                status = f'LIVE • camera {self.camera_order[name]}'
+                if hasattr(self,'preview_with_outlines'):
+                    preview,_,status=self.preview_with_outlines(name,preview,None)
                 preview.thumbnail((width, max(1, height - 25)), Image.Resampling.BILINEAR)
                 screen.preview = ImageTk.PhotoImage(preview, master=self)
-                status = f'LIVE • camera {self.camera_order[name]}'
             else:
                 screen.preview = None
             screen.coords(screen.image_id, width / 2, height / 2 + 10)
@@ -2968,6 +2972,8 @@ class EngineeringLotusUI(LotusUI):
         self.measurement_sources={}
         self.analysis_masks={}
         self.mask_views={}
+        self.outline_views={name:True for name in ('X VIEW','Y VIEW')}
+        self.outline_buttons={}
         self.vision_options={name:vision_defaults() for name in ('X VIEW','Y VIEW')}
         self.analysis_samples={}
         self.calibrations={}
@@ -3090,6 +3096,34 @@ class EngineeringLotusUI(LotusUI):
         canvas.create_text(10,58,text=note,anchor='w',fill=MUTED,font=(FONT,8))
         canvas.readout_description=self.live_measurement_text(result,now)[0]+'\n* Quality is a heuristic, not an accuracy measurement.'
 
+    def preview_with_outlines(self,name,live_image,live_stamp):
+        if not self.outline_views.get(name,True):
+            return live_image,live_stamp,'LIVE • outlines off'
+        result=self.measurements.get(name,{})
+        stamp=result.get('source_stamp')
+        source=self.measurement_sources.get(name)
+        fresh=finite_value(stamp) and 0<=time.monotonic()-stamp<=2
+        if (result.get('valid') and result.get('source')=='live' and fresh
+                and source is not None and source.size==live_image.size):
+            return self.overlay(source,result),stamp,f'OUTLINES • analyzed frame {time.monotonic()-stamp:.1f}s old'
+        return live_image,live_stamp,'LIVE • outlines unavailable'
+
+    def outline_button(self,parent,name):
+        button=tk.Button(parent,text='Outlines: '+('On' if self.outline_views.get(name,True) else 'Off'),
+                         command=lambda:self.toggle_outlines(name),bg=PLIGHT,fg=PURPLE,
+                         activebackground=PBORDER,relief='flat',font=(FONT,8,'bold'),padx=6,pady=7)
+        self.outline_buttons[name]=button
+        return button
+
+    def toggle_outlines(self,name):
+        self.end_jog()
+        self.outline_views[name]=not self.outline_views.get(name,True)
+        self.mask_views[name]=False
+        button=self.outline_buttons.get(name)
+        if button is not None and button.winfo_exists():
+            button.config(text='Outlines: '+('On' if self.outline_views[name] else 'Off'))
+        if self.engineering_widgets:self.render_engineering()
+
     def show_live(self):
         super().show_live()
         self.analysis_samples.clear()
@@ -3125,6 +3159,7 @@ class EngineeringLotusUI(LotusUI):
                       font=(FONT,9,'bold'),padx=13,pady=7).pack(fill='x',pady=1)
 
     def clear(self):
+        self.outline_buttons={}
         self.live_data_labels={}
         self.alignment_page_active=False
         self.alignment_metrics={}
@@ -3436,6 +3471,7 @@ class EngineeringLotusUI(LotusUI):
             box.pack_propagate(False)
             head=tk.Frame(box,bg=WHITE);head.pack(fill='x')
             tk.Label(head,text=name,bg=WHITE,fg=PURPLE,font=(FONT,11,'bold')).pack(side='left',padx=6)
+            self.outline_button(head,name).pack(side='left',padx=3)
             tk.Button(head,text='Live / Retry',command=lambda n=name:self.analysis_live(n),
                       bg=PLIGHT,fg=PURPLE,relief='flat',padx=8,pady=10).pack(side='left',padx=3)
             self.button(head,'View settings',lambda n=name:self.camera_settings_dialog(n)).pack(side='right',padx=3,pady=2)
@@ -3651,6 +3687,7 @@ class EngineeringLotusUI(LotusUI):
                 live,preview_stamp,camera_status=self.feeds.analysis_snapshot(self.camera_order[name])
                 if live is not None and preview_stamp is not None and 0<=time.monotonic()-preview_stamp<=2:
                     image=orient_camera_frame(live,name)
+                    image,preview_stamp,_=self.preview_with_outlines(name,image,preview_stamp)
                     preview_only=True
                 else:
                     image=None
